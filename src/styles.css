@@ -26,6 +26,8 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 /* SVG container (svg.js mounts an <svg> inside this div) */
 .floorplan-svg{width:100%;border:1px solid #eee;background:#fff}
 .floorplan-svg svg{width:100%;height:auto;display:block}
+.floorplan-svg-impl{animation:fp-enter 420ms ease-out}
+.hallway-rect{animation:hallway-pulse 2400ms ease-in-out infinite}
 
 .sidepanel{border:1px solid #eee;background:#fafafa;border-radius:8px;padding:10px;position:sticky;top:12px}
 .sidepanel-title{font-weight:700;margin-bottom:8px}
@@ -40,5 +42,15 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 /* modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center}
 .modal{background:#fff;padding:16px;border-radius:8px;min-width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.2)}
+
+@keyframes fp-enter{
+  from{opacity:0;transform:translateY(8px)}
+  to{opacity:1;transform:translateY(0)}
+}
+
+@keyframes hallway-pulse{
+  0%,100%{opacity:0.9}
+  50%{opacity:0.6}
+}
 
 /* selection/hover animations now come from svg.js */

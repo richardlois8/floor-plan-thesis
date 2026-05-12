@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { SVG } from '@svgdotjs/svg.js'
 
-export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }) {
+export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser, resetApp }) {
   const [selectedGroupId, setSelectedGroupId] = useState(null) // cell group
   const [selectedTargetKey, setSelectedTargetKey] = useState(null) // which pair user picked
   const [confirm, setConfirm] = useState(null) // { fromGroupId, target }
@@ -12,7 +12,8 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
   const targetElsRef = useRef(new Map()) // key -> svg.js element
   const cellElsRef = useRef(new Map()) // groupId -> svg.js element
 
-  const unitsById = useMemo(() => new Map(units.map(u => [u.id, u])), [units])
+  const flatUnits = useMemo(() => levels.flatMap(level => level.units), [levels])
+  const unitsById = useMemo(() => new Map(flatUnits.map(u => [u.id, u])), [flatUnits])
 
   const selectUnit = u => {
     setSelectedGroupId(u.groupId || null)
@@ -21,13 +22,13 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
 
   const groupUnits = useMemo(() => {
     const m = new Map()
-    for (const u of units) {
+    for (const u of flatUnits) {
       const key = u.groupId
       if (!m.has(key)) m.set(key, [])
       m.get(key).push(u)
     }
     return m
-  }, [units])
+  }, [flatUnits])
 
   const getGroupOwner = (groupId) => {
     const g = groupUnits.get(groupId) || []
@@ -136,14 +137,14 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
   // Calculate viewBox size based on units extents
   const viewBox = useMemo(() => {
     const padding = 40
-    const xs = units.map(u => [u.x, u.x + u.w]).flat()
-    const ys = units.map(u => [u.y, u.y + u.h]).flat()
+    const xs = flatUnits.map(u => [u.x, u.x + u.w]).flat()
+    const ys = flatUnits.map(u => [u.y, u.y + u.h]).flat()
     const minX = Math.max(0, Math.min(...xs) - padding)
     const minY = Math.max(0, Math.min(...ys) - padding)
     const maxX = Math.max(...xs) + padding
     const maxY = Math.max(...ys) + padding
     return `${minX} ${minY} ${maxX - minX} ${maxY - minY}`
-  }, [units])
+  }, [flatUnits])
 
   // (Re)draw using svg.js
   useEffect(() => {
@@ -159,6 +160,101 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
   // clear target overlays
   targetElsRef.current = new Map()
     cellElsRef.current = new Map()
+
+    // hallway/service zones
+    if (hallways?.length) {
+      hallways.forEach(h => {
+        const zone = draw
+          .rect(h.w, h.h)
+          .move(h.x, h.y)
+          .radius(14)
+          .fill('rgba(120,160,200,0.12)')
+          .stroke({ color: 'rgba(80,120,160,0.45)', width: 1, dasharray: [8, 6] })
+
+        zone.addClass('hallway-rect')
+
+        if (h.label) {
+          draw
+            .text(h.label)
+            .move(h.x + 12, h.y + 10)
+            .font({ size: 13, family: 'Inter, Segoe UI, Arial', anchor: 'start' })
+            .fill('rgba(40,60,80,0.75)')
+        }
+      })
+    }
+
+    // level headers + separator
+    const levels = new Map()
+    flatUnits.forEach(u => {
+      const cur = levels.get(u.level) || {
+        minX: u.x,
+        minY: u.y,
+        maxX: u.x + u.w,
+        maxY: u.y + u.h
+      }
+      cur.minX = Math.min(cur.minX, u.x)
+      cur.minY = Math.min(cur.minY, u.y)
+      cur.maxX = Math.max(cur.maxX, u.x + u.w)
+      cur.maxY = Math.max(cur.maxY, u.y + u.h)
+      levels.set(u.level, cur)
+    })
+
+    const orderedLevels = [...levels.entries()].sort((a, b) => a[0] - b[0])
+    orderedLevels.forEach(([level, box]) => {
+      const padX = 30
+      const padY = 34
+      const bandY = box.minY - 44
+      const bandW = (box.maxX - box.minX) + padX * 2
+      const bandH = (box.maxY - box.minY) + padY * 2
+      const bandX = box.minX - padX
+      const labelText = level === 0 ? 'Level 1 (Ground Floor)' : 'Level 2'
+
+      draw
+        .rect(bandW, bandH)
+        .move(bandX, box.minY - padY)
+        .radius(20)
+        .fill(level === 0 ? 'rgba(220,235,250,0.65)' : 'rgba(230,235,245,0.7)')
+        .stroke({ color: 'rgba(30,40,60,0.35)', width: 1 })
+
+      draw
+        .rect(bandW, 30)
+        .move(bandX, bandY)
+        .radius(10)
+        .fill(level === 0 ? 'rgba(40,120,200,0.32)' : 'rgba(70,90,120,0.32)')
+        .stroke({ color: 'rgba(40,60,80,0.55)', width: 1 })
+
+      draw
+        .text(labelText)
+        .move(bandX + 14, bandY + 6)
+        .font({ size: 14, family: 'Inter, Segoe UI, Arial', anchor: 'start' })
+        .fill('rgba(25,35,55,0.9)')
+
+      // draw
+      //   .text(level === 0 ? 'FIRST FLOOR' : 'SECOND FLOOR')
+      //   .move(bandX + 12, box.minY + (box.maxY - box.minY) / 2 - 10)
+      //   .font({ size: 12, family: 'Inter, Segoe UI, Arial', anchor: 'start' })
+      //   .fill('rgba(25,35,55,0.75)')
+    })
+
+    if (orderedLevels.length >= 2) {
+      const upper = orderedLevels[0][1]
+      const lower = orderedLevels[1][1]
+      const gapH = Math.max(0, lower.minY - upper.maxY)
+      if (gapH > 40) {
+        draw
+          .rect(upper.maxX - upper.minX, gapH)
+          .move(upper.minX, upper.maxY)
+          .radius(14)
+          .fill('rgba(30,40,60,0.08)')
+          .stroke({ color: 'rgba(30,40,60,0.3)', width: 1, dasharray: [10, 10] })
+
+        draw
+          .text('FLOOR BREAK')
+          .move(upper.minX + 12, upper.maxY + gapH / 2 - 7)
+          .font({ size: 12, family: 'Inter, Segoe UI, Arial', anchor: 'start' })
+          .fill('rgba(30,40,60,0.8)')
+      }
+    }
 
     // cell boundaries (show users the 4-unit cell grouping)
     for (const [gid, g] of groupUnits.entries()) {
@@ -176,17 +272,15 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
         .fill('transparent')
         .stroke({
           color: isSelected ? '#ff8a00' : 'rgba(0,0,0,0.15)',
-          width: isSelected ? 3 : 1
+          width: isSelected ? 3 : 1,
+          dasharray: [4, 6]
         })
-
-  // svg.js can crash if this becomes null/undefined during animation; use 'none'
-  boundary.attr({ 'stroke-dasharray': isSelected ? 'none' : '4 6' })
 
       cellElsRef.current.set(gid, boundary)
     }
 
     // units
-    units.forEach(u => {
+    flatUnits.forEach(u => {
       const occupied = !!u.owner
       const rect = draw
         .rect(u.w, u.h)
@@ -206,11 +300,11 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
 
       // hover animations
       rect.on('mouseenter', () => {
-        rect.animate(120).stroke({ width: 4, color: occupied ? '#111' : '#ff8a00' })
+        rect.stroke({ width: 4, color: occupied ? '#111' : '#ff8a00' })
       })
       rect.on('mouseleave', () => {
   const isInSelCell = selectedGroupId && u.groupId === selectedGroupId
-  rect.animate(160).stroke({ width: isInSelCell ? 4 : 2, color: occupied ? '#000' : '#2b8fff' })
+  rect.stroke({ width: isInSelCell ? 4 : 2, color: occupied ? '#000' : '#2b8fff' })
       })
 
       // click handlers
@@ -243,17 +337,14 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
           .move(minX - pad, minY - pad)
           .radius(12)
           .fill('rgba(255,138,0,0.10)')
-          .stroke({ color: '#ff8a00', width: 2, dasharray: '6,6' })
+          .stroke({ color: '#ff8a00', width: 2, dasharray: [6, 6] })
 
         hl.css({ cursor: 'pointer' })
-        hl.on('mouseenter', () => hl.animate(120).stroke({ width: 4 }))
-        hl.on('mouseleave', () => hl.animate(160).stroke({ width: selectedTargetKey === t.key ? 5 : 2 }))
+        hl.on('mouseenter', () => hl.stroke({ width: 4 }))
+        hl.on('mouseleave', () => hl.stroke({ width: selectedTargetKey === t.key ? 5 : 2 }))
         hl.on('click', () => {
           setSelectedTargetKey(t.key)
         })
-
-        // pulse to attract attention
-        hl.animate(900).fill({ opacity: 0.25 }).animate(900).fill({ opacity: 0.10 }).loop(true)
 
         targetElsRef.current.set(t.key, hl)
       })
@@ -273,7 +364,7 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
       drawRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [units, viewBox, eligibleTargets, selectedTargetKey, selectedGroupId, groupUnits, unitsById])
+  }, [flatUnits, viewBox, eligibleTargets, selectedTargetKey, selectedGroupId, groupUnits, unitsById])
 
   // Animate selection changes (cell selection + target selection)
   useEffect(() => {
@@ -287,24 +378,23 @@ export default function FloorPlan({ units, onUpdateUnit, currentUser, resetApp }
       const baseStroke = occupied ? '#000' : '#2b8fff'
       const strokeColor = isInSelCell ? '#ff8a00' : baseStroke
       const strokeWidth = isInSelCell ? 4 : 2
-      obj.rect.animate(120).stroke({ width: strokeWidth, color: strokeColor })
+      obj.rect.stroke({ width: strokeWidth, color: strokeColor })
     }
 
     // highlight chosen target
     for (const [key, hl] of targetElsRef.current.entries()) {
       const isSelTarget = key === selectedTargetKey
-      hl.animate(120).stroke({ width: isSelTarget ? 5 : 2 })
-        .fill({ opacity: isSelTarget ? 0.22 : 0.10 })
+      hl.stroke({ width: isSelTarget ? 5 : 2 })
+      hl.fill({ opacity: isSelTarget ? 0.22 : 0.10 })
     }
 
     // highlight selected cell boundary
     for (const [gid, boundary] of cellElsRef.current.entries()) {
       const isSelected = gid === selectedGroupId
-      boundary.animate(160).stroke({
+      boundary.stroke({
         color: isSelected ? '#ff8a00' : 'rgba(0,0,0,0.15)',
         width: isSelected ? 3 : 1
       })
-  boundary.attr({ 'stroke-dasharray': isSelected ? 'none' : '4 6' })
     }
   }, [selectedGroupId, selectedTargetKey, groupUnits, unitsById])
 
