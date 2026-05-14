@@ -41,6 +41,11 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 .target-meta{display:flex;gap:6px;flex-wrap:wrap}
 .pill{font-size:12px;border:1px solid #ddd;background:#f7f7fb;border-radius:999px;padding:2px 8px;color:#333}
 
+/* release section in side panel */
+.release-section{border-top:1px solid #f0c0bc;margin-top:12px;padding-top:12px}
+.release-btn{width:100%;background:#c0392b;color:#fff;border-color:#a93226;margin-top:4px;font-weight:600}
+.release-btn:hover{background:#a93226}
+
 /* modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center}
 .modal{background:#fff;padding:16px;border-radius:8px;min-width:320px;box-shadow:0 8px 24px rgba(0,0,0,0.2)}

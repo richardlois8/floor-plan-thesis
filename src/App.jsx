@@ -166,7 +166,7 @@ const defaultUnits = () => {
       for (let cc = 0; cc < layoutConfig.cellCols; cc++) {
         const cellId = `L${level}-CR${cr}-CC${cc}`
         const cellX = layoutConfig.startX + cc * (layoutConfig.cellW + layoutConfig.gapX)
-        const cellY = baseY + levelCfg.topHallway + cr * (layoutConfig.cellH + levelCfg.rowGap)
+        let cellY = baseY + levelCfg.topHallway + cr * (layoutConfig.cellH + levelCfg.rowGap)
 
         if (level === 1) {
           if (cr === 0) {

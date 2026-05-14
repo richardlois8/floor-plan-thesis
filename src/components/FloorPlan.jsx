@@ -1,10 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { SVG } from '@svgdotjs/svg.js'
+import {
+  validateUpgrade,
+  validateDowngrade,
+  isUpgradeTargetEligible,
+} from '../utils/reservationRules'
 
 export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser, resetApp }) {
-  const [selectedGroupId, setSelectedGroupId] = useState(null) // cell group
-  const [selectedTargetKey, setSelectedTargetKey] = useState(null) // which pair user picked
-  const [confirm, setConfirm] = useState(null) // { fromGroupId, target }
+  const [selectedGroupId, setSelectedGroupId] = useState(null)
+  const [selectedTargetKey, setSelectedTargetKey] = useState(null)
+  const [selectedOwnUnitId, setSelectedOwnUnitId] = useState(null) // own unit selected for release
+  const [confirm, setConfirm] = useState(null)
 
   const levelHostRefs = useRef(new Map())
   const drawRefs = useRef([])
@@ -16,9 +22,16 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const unitsById = useMemo(() => new Map(flatUnits.map(u => [u.id, u])), [flatUnits])
   const levelUnitsMap = useMemo(() => new Map(levels.map(level => [level.level, level.units])), [levels])
 
+  // All units owned by the currently-logged-in user (across all levels/cells)
+  const currentUserAllUnits = useMemo(
+    () => flatUnits.filter(u => u.owner === currentUser),
+    [flatUnits, currentUser]
+  )
+
   const selectUnit = u => {
     setSelectedGroupId(u.groupId || null)
     setSelectedTargetKey(null)
+    setSelectedOwnUnitId(null)
   }
 
   const groupUnits = useMemo(() => {
@@ -44,95 +57,89 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const isFullCellOwnedByUser = (groupId) => getGroupOwner(groupId) === currentUser
 
   const eligibleTargets = useMemo(() => {
-    // Targets are size-2 subsets. We'll support these upgrade types:
-    // - same-level: claim any horizontal pair (top row 2, bottom row 2) inside an empty cell
-    // - vertical: claim a pair of subunits in the same quadrant row/col from the cell above/below (same cellR/cellC)
-    //
-    // Each target is { key, kind, level, cellR, cellC, unitIds[] }
+    if (!currentUser) return []
+
+    // ── PHASE 1: INITIAL RESERVATION (user has no units yet) ─────────────────
+    // The user must claim an entire cell group (4 units) to satisfy rule 1.
+    if (currentUserAllUnits.length === 0) {
+      if (!selectedGroupId) return []
+      const g = groupUnits.get(selectedGroupId) || []
+      if (!g.every(u => !u.owner)) return [] // group must be fully empty
+      return [{
+        key: `INIT:${selectedGroupId}`,
+        kind: 'initial-group',
+        label: selectedGroupId,
+        unitIds: g.map(u => u.id),
+        distance: 0
+      }]
+    }
+
+    // ── PHASE 2: SINGLE-UNIT EXTENSION (user already has ≥ 4 units) ──────────
+    // Each eligible target is exactly 1 empty unit that is adjacent to the
+    // user's reservation and keeps service-area connectivity (rules 3 + 4).
+    const userLevels = new Set(currentUserAllUnits.map(u => u.level))
+    const userCx = currentUserAllUnits.reduce((s, u) => s + u.x + u.w / 2, 0) / currentUserAllUnits.length
+    const userCy = currentUserAllUnits.reduce((s, u) => s + u.y + u.h / 2, 0) / currentUserAllUnits.length
+
     const targets = []
-    if (!selectedGroupId) return targets
-    if (!currentUser) return targets
-    if (!isFullCellOwnedByUser(selectedGroupId)) return targets
-
-    const from = groupUnits.get(selectedGroupId)
-    if (!from || from.length !== 4) return targets
-    const anyFrom = from[0]
-
-    // helper to add if available
-    const addIfAvailable = (t) => {
-      if (!t.unitIds.every(id => !unitsById.get(id)?.owner)) return
-
-      // distance from selected cell center to the target bbox center
-      const fromItems = from
-      const fromMinX = Math.min(...fromItems.map(i => i.x))
-      const fromMinY = Math.min(...fromItems.map(i => i.y))
-      const fromMaxX = Math.max(...fromItems.map(i => i.x + i.w))
-      const fromMaxY = Math.max(...fromItems.map(i => i.y + i.h))
-      const fromCx = (fromMinX + fromMaxX) / 2
-      const fromCy = (fromMinY + fromMaxY) / 2
-
-      const items = t.unitIds.map(id => unitsById.get(id)).filter(Boolean)
-      const minX = Math.min(...items.map(i => i.x))
-      const minY = Math.min(...items.map(i => i.y))
-      const maxX = Math.max(...items.map(i => i.x + i.w))
-      const maxY = Math.max(...items.map(i => i.y + i.h))
-      const cx = (minX + maxX) / 2
-      const cy = (minY + maxY) / 2
-      const dist = Math.round(Math.hypot(cx - fromCx, cy - fromCy))
-
-      targets.push({ ...t, distance: dist })
+    for (const u of flatUnits) {
+      if (u.owner) continue
+      if (!isUpgradeTargetEligible(currentUserAllUnits, [u])) continue
+      const cx = u.x + u.w / 2
+      const cy = u.y + u.h / 2
+      targets.push({
+        key: `U:${u.id}`,
+        kind: userLevels.has(u.level) ? 'same-level' : 'cross-floor',
+        label: u.id,
+        unitIds: [u.id],
+        distance: Math.round(Math.hypot(cx - userCx, cy - userCy))
+      })
     }
+    return targets.sort((a, b) => a.distance - b.distance)
+  }, [currentUser, currentUserAllUnits, selectedGroupId, flatUnits, groupUnits])
 
-    // same-level, empty cells anywhere: choose any cell, take two subunits (top row or bottom row)
-    for (const [gid, g] of groupUnits.entries()) {
-      if (gid === selectedGroupId) continue
-      const cellOwner = getGroupOwner(gid)
-      if (cellOwner) continue // occupied cell
+  const submitAction = () => {
+    if (!currentUser) return alert('Please set your user name first')
 
-      // ensure fully empty
-      if (!g.every(x => !x.owner)) continue
-
-      // top row pair: q0 + q1 ; bottom row pair: q2 + q3
-      const q0 = g.find(x => x.q === 0)?.id
-      const q1 = g.find(x => x.q === 1)?.id
-      const q2 = g.find(x => x.q === 2)?.id
-      const q3 = g.find(x => x.q === 3)?.id
-  if (q0 && q1) addIfAvailable({ key: `HL:${gid}:top`, kind: 'same-level', label: `${gid} (top pair)`, unitIds: [q0, q1] })
-  if (q2 && q3) addIfAvailable({ key: `HL:${gid}:bot`, kind: 'same-level', label: `${gid} (bottom pair)`, unitIds: [q2, q3] })
+    if (currentUserAllUnits.length === 0) {
+      // Phase 1: initial group reservation
+      if (!selectedGroupId) return alert('Click any cell on the floor plan to select your starting group')
+      const groupTarget = eligibleTargets.find(t => t.kind === 'initial-group')
+      if (!groupTarget) return alert('The selected group is not fully available')
+      setConfirm({ isInitial: true, target: groupTarget })
+    } else {
+      // Phase 2: single-unit addition
+      if (!eligibleTargets.length) return alert('No adjacent empty units available to add')
+      const target = eligibleTargets.find(t => t.key === selectedTargetKey) || eligibleTargets[0]
+      const targetUnit = unitsById.get(target.unitIds[0])
+      const errors = validateUpgrade(currentUserAllUnits, [targetUnit].filter(Boolean))
+      if (errors.length) return alert('Cannot add unit:\n\n• ' + errors.join('\n• '))
+      setSelectedTargetKey(target.key)
+      setConfirm({ isInitial: false, target })
     }
+  }
 
-    // vertical extension: same cellR/cellC but other level; pick a pair by column (left col q0+q2) or right col (q1+q3)
-    const otherLevel = anyFrom.level === 0 ? 1 : 0
-    const otherGid = `L${otherLevel}-CR${anyFrom.cellR}-CC${anyFrom.cellC}`
-    const other = groupUnits.get(otherGid)
-    if (other && other.length === 4 && other.every(x => !x.owner)) {
-      const left = [other.find(x => x.q === 0)?.id, other.find(x => x.q === 2)?.id].filter(Boolean)
-      const right = [other.find(x => x.q === 1)?.id, other.find(x => x.q === 3)?.id].filter(Boolean)
-      if (left.length === 2) addIfAvailable({ key: `V:${otherGid}:left`, kind: 'vertical', label: `${otherGid} (left col)`, unitIds: left, dir: anyFrom.level === 0 ? 'below' : 'above' })
-      if (right.length === 2) addIfAvailable({ key: `V:${otherGid}:right`, kind: 'vertical', label: `${otherGid} (right col)`, unitIds: right, dir: anyFrom.level === 0 ? 'below' : 'above' })
-    }
-
-    // sort by distance so the picker is useful
-    return targets.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0))
-  }, [selectedGroupId, currentUser, groupUnits, unitsById])
-
-  const submitUpgrade = () => {
-  if (!selectedGroupId) return
-  if (!currentUser) return alert('Please set your user name first')
-  if (!isFullCellOwnedByUser(selectedGroupId)) return alert('You must own the full 4-unit cell before upgrading')
-  if (!eligibleTargets.length) return alert('No eligible upgrade targets available')
-
-  const target = eligibleTargets.find(t => t.key === selectedTargetKey) || eligibleTargets[0]
-  setSelectedTargetKey(target.key)
-  setConfirm({ fromGroupId: selectedGroupId, target })
+  const submitRelease = () => {
+    if (!selectedOwnUnitId) return
+    const errors = validateDowngrade(currentUserAllUnits, selectedOwnUnitId)
+    if (errors.length) return alert('Release not allowed:\n\n• ' + errors.join('\n• '))
+    setConfirm({ isRelease: true, unitId: selectedOwnUnitId, label: selectedOwnUnitId })
   }
 
   const toggleClaim = u => {
     if (!currentUser) return alert('Set your user name to claim a unit')
-  // claim/release single sub-units for testing; real flow expects full-cell ownership.
-  if (!u.owner) onUpdateUnit(u.id, { owner: currentUser })
-  else if (u.owner === currentUser) onUpdateUnit(u.id, { owner: null })
-  else alert('This unit is owned by ' + u.owner)
+    if (!u.owner) {
+      // Claiming: check rule 1 — the first claim must reach ≥ 4 units in a single group.
+      // Individual claims are only used for debug; the upgrade flow handles the 4-unit minimum.
+      onUpdateUnit(u.id, { owner: currentUser })
+    } else if (u.owner === currentUser) {
+      // Releasing (downgrade): validate all rules before allowing the release
+      const errors = validateDowngrade(currentUserAllUnits, u.id)
+      if (errors.length) return alert('Release not allowed:\n\n• ' + errors.join('\n• '))
+      onUpdateUnit(u.id, { owner: null })
+    } else {
+      alert('This unit is owned by ' + u.owner)
+    }
   }
 
   // Calculate viewBox size based on units extents
@@ -267,7 +274,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         const boundary = draw
           .rect((maxX - minX) + pad * 2, (maxY - minY) + pad * 2)
           .move(minX - pad, minY - pad)
-          .radius(14)
+          // .radius(14)
           .fill('transparent')
           .stroke({
             color: isSelected ? '#ff8a00' : 'rgba(0,0,0,0.15)',
@@ -286,10 +293,12 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           .move(u.x, u.y)
           .radius(0)
           .fill(occupied ? 'rgba(30, 30, 30, 0.58)' : 'rgba(255, 255, 255, 0.35)')
-          .stroke({ color: occupied ? '#000' : '#ffffff', width: 1 })
+          // .stroke({ color: occupied ? '#000' : '#000', width: 1 })
+          .stroke({ width: 0})
 
         rect.attr({ 'data-id': u.id })
-        rect.css({ cursor: occupied ? 'not-allowed' : 'pointer' })
+        // own units are clickable for release; others' units are blocked
+        rect.css({ cursor: (occupied && u.owner !== currentUser) ? 'not-allowed' : 'pointer' })
 
         // const label = draw
         //   .text(u.id)
@@ -299,18 +308,33 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         const label = null
 
         // hover animations
-        rect.on('mouseenter', () => {
-          rect.stroke({ width: 2, color: occupied ? '#111' : '#ff8a00' })
-        })
-        rect.on('mouseleave', () => {
-          const isInSelCell = selectedGroupId && u.groupId === selectedGroupId
-          rect.stroke({ width: isInSelCell ? 2 : 1, color: occupied ? '#000' : '#000000' })
-        })
+        // rect.on('mouseenter', () => {
+        //   rect.stroke({ width: 3, color: occupied ? '#111' : '#ff8a00' })
+        // })
+        // rect.on('mouseleave', () => {
+        //   const isInSelCell = selectedGroupId && u.groupId === selectedGroupId
+        //   rect.stroke({ width: isInSelCell ? 2 : 1, color: occupied ? '#000' : '#000000' })
+        // })
 
         // click handlers
         rect.on('click', () => {
-    // selecting any sub-unit selects the whole cell
-          selectUnit(u)
+          if (currentUserAllUnits.length === 0) {
+            // Phase 1: click any unit to select its group for initial reservation
+            selectUnit(u)
+          } else if (!u.owner) {
+            // Phase 2: click an empty unit → auto-select as target if eligible; clear release selection
+            const key = `U:${u.id}`
+            if (eligibleTargets.some(t => t.key === key)) setSelectedTargetKey(key)
+            setSelectedGroupId(u.groupId || null)
+            setSelectedOwnUnitId(null)
+          } else if (u.owner === currentUser) {
+            // Click own unit → select it for potential release
+            setSelectedOwnUnitId(u.id)
+            setSelectedGroupId(u.groupId || null)
+            setSelectedTargetKey(null)
+          } else {
+            selectUnit(u) // others' unit: just highlight its cell
+          }
         })
         rect.on('dblclick', e => {
           e.preventDefault()
@@ -335,7 +359,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           const hl = draw
             .rect((maxX - minX) + pad * 2, (maxY - minY) + pad * 2)
             .move(minX - pad, minY - pad)
-            .radius(12)
+            // .radius(12)
             .fill('rgba(255,138,0,0.10)')
             .stroke({ color: '#ff8a00', width: 2, dasharray: [6, 6] })
 
@@ -381,7 +405,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [levels, flatUnits, levelViewBoxes, eligibleTargets, selectedTargetKey, selectedGroupId, groupUnits, unitsById, hallways, levelUnitsMap])
 
-  // Animate selection changes (cell selection + target selection)
+  // Animate selection changes (cell selection + target selection + release selection)
   useEffect(() => {
     const map = unitElsRef.current
     const selectedUnits = new Set((groupUnits.get(selectedGroupId) || []).map(u => u.id))
@@ -390,9 +414,17 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       const u = unitsById.get(id)
       const occupied = !!u?.owner
       const isInSelCell = selectedUnits.has(id)
-      const baseStroke = occupied ? '#000' : '#000000'
-      const strokeColor = isInSelCell ? '#ff8a00' : baseStroke
-      const strokeWidth = isInSelCell ? 4 : 2
+      const isSelectedForRelease = id === selectedOwnUnitId
+
+      let strokeColor = occupied ? '#000' : '#000000'
+      let strokeWidth = 1
+      if (isSelectedForRelease) {
+        strokeColor = '#e74c3c'
+        strokeWidth = 4
+      } else if (isInSelCell) {
+        strokeColor = '#ff8a00'
+        strokeWidth = 4
+      }
       obj.rect.stroke({ width: strokeWidth, color: strokeColor })
     }
 
@@ -411,7 +443,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         width: isSelected ? 3 : 1
       })
     }
-  }, [selectedGroupId, selectedTargetKey, groupUnits, unitsById])
+  }, [selectedGroupId, selectedTargetKey, selectedOwnUnitId, groupUnits, unitsById])
 
   return (
     <div className="floorplan-wrap">
@@ -430,14 +462,24 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         </div>
 
         <aside className="sidepanel">
-          <div className="sidepanel-title">Upgrade targets (+2 units)</div>
-          {!currentUser && <div className="sidepanel-hint">Set your user name to see targets.</div>}
-          {currentUser && !selectedGroupId && <div className="sidepanel-hint">Select your cell (any of its 4 squares).</div>}
-          {currentUser && selectedGroupId && !isFullCellOwnedByUser(selectedGroupId) && (
-            <div className="sidepanel-hint">You must own all 4 squares of this cell to upgrade.</div>
+          <div className="sidepanel-title">
+            {currentUserAllUnits.length === 0 ? 'New reservation' : 'Add a unit'}
+          </div>
+
+          {!currentUser && (
+            <div className="sidepanel-hint">Set your user name to make a reservation.</div>
+          )}
+          {currentUser && currentUserAllUnits.length === 0 && !selectedGroupId && (
+            <div className="sidepanel-hint">Click any cell to select your starting group (minimum 4 units).</div>
+          )}
+          {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length === 0 && (
+            <div className="sidepanel-hint">This group is occupied. Pick a fully empty cell.</div>
+          )}
+          {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length === 0 && (
+            <div className="sidepanel-hint">No adjacent empty units available.</div>
           )}
 
-          {eligibleTargets.length > 0 ? (
+          {eligibleTargets.length > 0 && (
             <div className="target-list">
               {eligibleTargets.map(t => (
                 <button
@@ -448,26 +490,51 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                   <div className="target-main">
                     <div className="target-label">{t.label}</div>
                     <div className="target-meta">
-                      <span className="pill">{t.kind === 'same-level' ? 'same level' : (t.dir || 'vertical')}</span>
-                      <span className="pill">dist {t.distance}</span>
+                      <span className="pill">
+                        {t.kind === 'initial-group' ? 'full group · 4 units' : t.kind === 'cross-floor' ? 'cross-floor' : 'same level'}
+                      </span>
+                      {t.kind !== 'initial-group' && <span className="pill">dist {t.distance}</span>}
                     </div>
                   </div>
                 </button>
               ))}
             </div>
-          ) : (
-            <div className="sidepanel-hint">No valid targets yet.</div>
+          )}
+
+          {/* Release section — shown when user has clicked one of their own units */}
+          {currentUser && selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) && (
+            <div className="release-section">
+              <div className="sidepanel-title" style={{color:'#c0392b', marginTop: 12}}>Release unit</div>
+              <div className="sidepanel-hint">
+                Selected: <strong>{selectedOwnUnitId}</strong>
+              </div>
+              {(() => {
+                const errors = validateDowngrade(currentUserAllUnits, selectedOwnUnitId)
+                return errors.length > 0
+                  ? errors.map((e, i) => (
+                      <div key={i} className="sidepanel-hint" style={{color:'#c0392b'}}>⚠ {e}</div>
+                    ))
+                  : <button className="release-btn" onClick={submitRelease}>Release This Unit</button>
+              })()}
+            </div>
           )}
         </aside>
       </div>
 
       <div className="controls">
-        <button onClick={submitUpgrade} disabled={!selectedGroupId}>Upgrade (pick 2 units)</button>
-        <button onClick={() => {
-          if (!selectedGroupId) return
-          const any = (groupUnits.get(selectedGroupId) || [])[0]
-          if (any) toggleClaim(any)
-        }} disabled={!selectedGroupId}>Claim/Release (debug)</button>
+        <button
+          onClick={submitAction}
+          disabled={!currentUser || (currentUserAllUnits.length === 0 ? !selectedGroupId : !eligibleTargets.length)}
+        >
+          {currentUserAllUnits.length === 0 ? 'Reserve Group' : 'Add Unit'}
+        </button>
+        <button
+          onClick={submitRelease}
+          disabled={!selectedOwnUnitId || !currentUserAllUnits.some(u => u.id === selectedOwnUnitId)}
+          style={selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) ? {background:'#c0392b', color:'#fff', borderColor:'#a93226'} : {}}
+        >
+          Release Unit
+        </button>
         <button onClick={() => { resetApp() }}>Reset</button>
       </div>
 
@@ -475,26 +542,52 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         <div><span className="box filled"/> Occupied</div>
         <div><span className="box"/> Available</div>
         <div><span className="box selected"/> Selected</div>
-  <div style={{marginLeft:12}}>Tip: click any small square to select its cell. Eligible upgrade targets (2 units) will glow.</div>
+        <div style={{marginLeft:12}}>
+          {currentUserAllUnits.length === 0
+            ? 'Tip: click a cell to pick your starting group, then click "Reserve Group".'
+            : 'Tip: click an adjacent empty unit to add it. Click one of your own units (red border) then "Release Unit" to remove it.'}
+        </div>
       </div>
 
       {confirm && (
         <div className="modal-overlay">
           <div className="modal">
-            <h3>Confirm upgrade</h3>
+            <h3>
+              {confirm.isRelease ? 'Confirm release' : confirm.isInitial ? 'Confirm reservation' : 'Confirm add unit'}
+            </h3>
             <p>
-              Upgrade from <strong>{confirm.fromGroupId}</strong> to <strong>{confirm.target.label}</strong>?
+              {confirm.isRelease
+                ? <>Release unit <strong>{confirm.label}</strong> from your reservation?</>
+                : confirm.isInitial
+                  ? <>Reserve group <strong>{confirm.target.label}</strong> (4 units)?</>
+                  : <>Add unit <strong>{confirm.target.label}</strong> to your reservation?</>
+              }
             </p>
             <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
               <button onClick={() => setConfirm(null)}>Cancel</button>
               <button onClick={() => {
-                // perform upgrade: user keeps original 4 units, and gains 2 more units (target pair)
-                // This models "extend" behavior: minimum +2 units.
-                confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser }))
+                if (confirm.isRelease) {
+                  const errors = validateDowngrade(currentUserAllUnits, confirm.unitId)
+                  if (errors.length) {
+                    setConfirm(null)
+                    return alert('No longer valid:\n\n• ' + errors.join('\n• '))
+                  }
+                  onUpdateUnit(confirm.unitId, { owner: null })
+                  setSelectedOwnUnitId(null)
+                } else if (confirm.isInitial) {
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser }))
+                } else {
+                  const targetUnit = unitsById.get(confirm.target.unitIds[0])
+                  const errors = validateUpgrade(currentUserAllUnits, [targetUnit].filter(Boolean))
+                  if (errors.length) {
+                    setConfirm(null)
+                    return alert('No longer valid:\n\n• ' + errors.join('\n• '))
+                  }
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser }))
+                }
                 setConfirm(null)
                 setSelectedGroupId(null)
                 setSelectedTargetKey(null)
-                alert(`Extension requested: +2 units at ${confirm.target.label}`)
               }}>Confirm</button>
             </div>
           </div>
