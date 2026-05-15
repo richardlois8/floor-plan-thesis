@@ -4,13 +4,19 @@ import {
   validateUpgrade,
   validateDowngrade,
   isUpgradeTargetEligible,
+  areUnitsAdjacent,
+  validateActionDate,
 } from '../utils/reservationRules'
 
 export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser, resetApp }) {
   const [selectedGroupId, setSelectedGroupId] = useState(null)
   const [selectedTargetKey, setSelectedTargetKey] = useState(null)
-  const [selectedOwnUnitId, setSelectedOwnUnitId] = useState(null) // own unit selected for release
+  const [selectedOwnUnitId, setSelectedOwnUnitId] = useState(null)
   const [confirm, setConfirm] = useState(null)
+
+  // Single action date — written into every reserve / release action.
+  const todayISO = new Date().toISOString().split('T')[0]
+  const [actionDate, setActionDate] = useState(todayISO)
 
   const levelHostRefs = useRef(new Map())
   const drawRefs = useRef([])
@@ -22,7 +28,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const unitsById = useMemo(() => new Map(flatUnits.map(u => [u.id, u])), [flatUnits])
   const levelUnitsMap = useMemo(() => new Map(levels.map(level => [level.level, level.units])), [levels])
 
-  // All units owned by the currently-logged-in user (across all levels/cells)
+  // Units the current user currently owns
   const currentUserAllUnits = useMemo(
     () => flatUnits.filter(u => u.owner === currentUser),
     [flatUnits, currentUser]
@@ -60,60 +66,126 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     if (!currentUser) return []
 
     // ── PHASE 1: INITIAL RESERVATION (user has no units yet) ─────────────────
-    // The user must claim an entire cell group (4 units) to satisfy rule 1.
+    // Minimum 2 units — user picks the top pair (Q0+Q1) or bottom pair (Q2+Q3)
+    // within any fully-or-partially-empty cell.
     if (currentUserAllUnits.length === 0) {
       if (!selectedGroupId) return []
       const g = groupUnits.get(selectedGroupId) || []
-      if (!g.every(u => !u.owner)) return [] // group must be fully empty
-      return [{
-        key: `INIT:${selectedGroupId}`,
-        kind: 'initial-group',
-        label: selectedGroupId,
-        unitIds: g.map(u => u.id),
-        distance: 0
-      }]
+      if (!g.length) return []
+
+      const targets = []
+      const topPair = [g.find(u => u.q === 0), g.find(u => u.q === 1)].filter(Boolean)
+      if (topPair.length === 2 && topPair.every(u => !u.owner)) {
+        targets.push({
+          key: `INIT:${selectedGroupId}:top`,
+          kind: 'initial-pair',
+          label: `${selectedGroupId} — top pair`,
+          unitIds: topPair.map(u => u.id),
+          distance: 0,
+          pairRow: 'top'
+        })
+      }
+      const botPair = [g.find(u => u.q === 2), g.find(u => u.q === 3)].filter(Boolean)
+      if (botPair.length === 2 && botPair.every(u => !u.owner)) {
+        targets.push({
+          key: `INIT:${selectedGroupId}:bot`,
+          kind: 'initial-pair',
+          label: `${selectedGroupId} — bottom pair`,
+          unitIds: botPair.map(u => u.id),
+          distance: 1,
+          pairRow: 'bottom'
+        })
+      }
+      return targets
     }
 
-    // ── PHASE 2: SINGLE-UNIT EXTENSION (user already has ≥ 4 units) ──────────
-    // Each eligible target is exactly 1 empty unit that is adjacent to the
-    // user's reservation and keeps service-area connectivity (rules 3 + 4).
+    // ── PHASE 2: EXTENSION ───────────────────────────────────────────────────
+    // Below 4 units total → must add 2 at a time (enumerate adjacent empty pairs).
+    // At 4 or more units → add 1 at a time.
     const userLevels = new Set(currentUserAllUnits.map(u => u.level))
     const userCx = currentUserAllUnits.reduce((s, u) => s + u.x + u.w / 2, 0) / currentUserAllUnits.length
     const userCy = currentUserAllUnits.reduce((s, u) => s + u.y + u.h / 2, 0) / currentUserAllUnits.length
 
     const targets = []
-    for (const u of flatUnits) {
-      if (u.owner) continue
-      if (!isUpgradeTargetEligible(currentUserAllUnits, [u])) continue
-      const cx = u.x + u.w / 2
-      const cy = u.y + u.h / 2
-      targets.push({
-        key: `U:${u.id}`,
-        kind: userLevels.has(u.level) ? 'same-level' : 'cross-floor',
-        label: u.id,
-        unitIds: [u.id],
-        distance: Math.round(Math.hypot(cx - userCx, cy - userCy))
-      })
+
+    if (currentUserAllUnits.length < 4) {
+      // ── Pair mode: add 2 adjacent empty units ──────────────────────────────
+      const emptyUnits = flatUnits.filter(u => !u.owner)
+      for (let i = 0; i < emptyUnits.length; i++) {
+        for (let j = i + 1; j < emptyUnits.length; j++) {
+          const a = emptyUnits[i]
+          const b = emptyUnits[j]
+          if (!areUnitsAdjacent(a, b)) continue
+          if (!isUpgradeTargetEligible(currentUserAllUnits, [a, b])) continue
+
+          const cx = (a.x + a.w / 2 + b.x + b.w / 2) / 2
+          const cy = (a.y + a.h / 2 + b.y + b.h / 2) / 2
+
+          let label, pairRow
+          if (a.groupId === b.groupId) {
+            pairRow = [0, 1].includes(a.q) && [0, 1].includes(b.q) ? 'top' : 'bottom'
+            label = `${a.groupId} — ${pairRow}`
+          } else {
+            pairRow = null
+            label = `${a.id} + ${b.id}`
+          }
+
+          targets.push({
+            key: `PAIR:${[a.id, b.id].sort().join('|')}`,
+            kind: userLevels.has(a.level) && userLevels.has(b.level) ? 'same-level' : 'cross-floor',
+            label,
+            unitIds: [a.id, b.id],
+            distance: Math.round(Math.hypot(cx - userCx, cy - userCy)),
+            pairRow
+          })
+        }
+      }
+    } else {
+      // ── Single-unit mode: add 1 empty adjacent unit ─────────────────────
+      for (const u of flatUnits) {
+        if (u.owner) continue
+        if (!isUpgradeTargetEligible(currentUserAllUnits, [u])) continue
+        const cx = u.x + u.w / 2
+        const cy = u.y + u.h / 2
+        targets.push({
+          key: `U:${u.id}`,
+          kind: userLevels.has(u.level) ? 'same-level' : 'cross-floor',
+          label: u.id,
+          unitIds: [u.id],
+          distance: Math.round(Math.hypot(cx - userCx, cy - userCy))
+        })
+      }
     }
+
     return targets.sort((a, b) => a.distance - b.distance)
   }, [currentUser, currentUserAllUnits, selectedGroupId, flatUnits, groupUnits])
 
   const submitAction = () => {
     if (!currentUser) return alert('Please set your user name first')
+    const dateErrors = validateActionDate(actionDate)
+    if (dateErrors.length) return alert('Invalid date:\n\n• ' + dateErrors.join('\n• '))
 
     if (currentUserAllUnits.length === 0) {
-      // Phase 1: initial group reservation
-      if (!selectedGroupId) return alert('Click any cell on the floor plan to select your starting group')
-      const groupTarget = eligibleTargets.find(t => t.kind === 'initial-group')
-      if (!groupTarget) return alert('The selected group is not fully available')
-      setConfirm({ isInitial: true, target: groupTarget })
+      // Phase 1: initial pair reservation (top or bottom pair of the selected cell)
+      if (!selectedGroupId) return alert('Click any cell on the floor plan to select your starting location')
+      if (!eligibleTargets.length) return alert('No available pairs in this cell. Pick another one.')
+      const pairTarget = eligibleTargets.find(t => t.key === selectedTargetKey && t.kind === 'initial-pair')
+        || eligibleTargets.find(t => t.kind === 'initial-pair')
+      if (!pairTarget) return alert('No available pairs in this cell. Pick another one.')
+      setSelectedTargetKey(pairTarget.key)
+      setConfirm({ isInitial: true, target: pairTarget })
     } else {
-      // Phase 2: single-unit addition
-      if (!eligibleTargets.length) return alert('No adjacent empty units available to add')
+      // Phase 2: pair addition (< 4 units) or single-unit addition (≥ 4 units)
+      const isPairMode = currentUserAllUnits.length < 4
+      if (!eligibleTargets.length) return alert(
+        isPairMode ? 'No adjacent pair available to add.' : 'No adjacent empty units available to add.'
+      )
       const target = eligibleTargets.find(t => t.key === selectedTargetKey) || eligibleTargets[0]
-      const targetUnit = unitsById.get(target.unitIds[0])
-      const errors = validateUpgrade(currentUserAllUnits, [targetUnit].filter(Boolean))
-      if (errors.length) return alert('Cannot add unit:\n\n• ' + errors.join('\n• '))
+      const targetUnits = target.unitIds.map(id => unitsById.get(id)).filter(Boolean)
+      const errors = validateUpgrade(currentUserAllUnits, targetUnits)
+      if (errors.length) return alert(
+        `Cannot add ${targetUnits.length > 1 ? 'pair' : 'unit'}:\n\n• ` + errors.join('\n• ')
+      )
       setSelectedTargetKey(target.key)
       setConfirm({ isInitial: false, target })
     }
@@ -288,17 +360,21 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       // units
       levelUnits.forEach(u => {
         const occupied = !!u.owner
+        const ownedByMe = u.owner === currentUser
         const rect = draw
           .rect(u.w, u.h)
           .move(u.x, u.y)
           .radius(0)
           .fill(occupied ? 'rgba(30, 30, 30, 0.58)' : 'rgba(255, 255, 255, 0.35)')
-          // .stroke({ color: occupied ? '#000' : '#000', width: 1 })
-          .stroke({ width: 0})
+          .stroke({ color: '#0000003b', width: 1 })
+
+        // Tooltip: show who reserved it and when
+        if (occupied) {
+          rect.element('title').words(`${u.owner}  •  reserved ${u.date ?? '—'}`)
+        }
 
         rect.attr({ 'data-id': u.id })
-        // own units are clickable for release; others' units are blocked
-        rect.css({ cursor: (occupied && u.owner !== currentUser) ? 'not-allowed' : 'pointer' })
+        rect.css({ cursor: (occupied && !ownedByMe) ? 'not-allowed' : 'pointer' })
 
         // const label = draw
         //   .text(u.id)
@@ -322,13 +398,18 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
             // Phase 1: click any unit to select its group for initial reservation
             selectUnit(u)
           } else if (!u.owner) {
-            // Phase 2: click an empty unit → auto-select as target if eligible; clear release selection
-            const key = `U:${u.id}`
-            if (eligibleTargets.some(t => t.key === key)) setSelectedTargetKey(key)
+            // Phase 2: auto-select eligible target containing this unit
+            if (currentUserAllUnits.length >= 4) {
+              const key = `U:${u.id}`
+              if (eligibleTargets.some(t => t.key === key)) setSelectedTargetKey(key)
+            } else {
+              const pair = eligibleTargets.find(t => t.unitIds.includes(u.id))
+              if (pair) setSelectedTargetKey(pair.key)
+            }
             setSelectedGroupId(u.groupId || null)
             setSelectedOwnUnitId(null)
           } else if (u.owner === currentUser) {
-            // Click own unit → select it for potential release
+            // Click own unit → select for potential release
             setSelectedOwnUnitId(u.id)
             setSelectedGroupId(u.groupId || null)
             setSelectedTargetKey(null)
@@ -416,7 +497,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       const isInSelCell = selectedUnits.has(id)
       const isSelectedForRelease = id === selectedOwnUnitId
 
-      let strokeColor = occupied ? '#000' : '#000000'
+      let strokeColor = occupied ? '#0000003b' : '#0000003b'
       let strokeWidth = 1
       if (isSelectedForRelease) {
         strokeColor = '#e74c3c'
@@ -462,20 +543,46 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         </div>
 
         <aside className="sidepanel">
-          <div className="sidepanel-title">
-            {currentUserAllUnits.length === 0 ? 'New reservation' : 'Add a unit'}
+          {/* ── Action date ───────────────────────────────────────── */}
+          <div className="sidepanel-title">Action date</div>
+          <div className="date-picker-row">
+            <label className="date-field">
+              <span>Date</span>
+              <input type="date" value={actionDate} min={todayISO}
+                onChange={e => setActionDate(e.target.value)} />
+            </label>
+          </div>
+
+          {/* ── Action section ────────────────────────────────────── */}
+          <div className="sidepanel-title" style={{marginTop: 14}}>
+            {currentUserAllUnits.length === 0
+              ? 'New reservation'
+              : currentUserAllUnits.length < 4
+              ? 'Extend reservation (+2 units)'
+              : 'Add a unit'}
           </div>
 
           {!currentUser && (
             <div className="sidepanel-hint">Set your user name to make a reservation.</div>
           )}
           {currentUser && currentUserAllUnits.length === 0 && !selectedGroupId && (
-            <div className="sidepanel-hint">Click any cell to select your starting group (minimum 4 units).</div>
+            <div className="sidepanel-hint">Click any cell to pick your starting location (minimum 2 units).</div>
           )}
           {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length === 0 && (
-            <div className="sidepanel-hint">This group is occupied. Pick a fully empty cell.</div>
+            <div className="sidepanel-hint">Both pairs in this cell are occupied. Pick another cell.</div>
           )}
-          {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length === 0 && (
+          {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length > 0 && (
+            <div className="sidepanel-hint">Choose top or bottom pair, then click <strong>Reserve Pair</strong>.</div>
+          )}
+          {currentUser && currentUserAllUnits.length > 0 && currentUserAllUnits.length < 4 && eligibleTargets.length === 0 && (
+            <div className="sidepanel-hint">No adjacent pairs available. Check a different direction.</div>
+          )}
+          {currentUser && currentUserAllUnits.length > 0 && currentUserAllUnits.length < 4 && eligibleTargets.length > 0 && (
+            <div className="sidepanel-hint">
+              Pick a pair below to reach {currentUserAllUnits.length + 2} units, then you can add one at a time.
+            </div>
+          )}
+          {currentUser && currentUserAllUnits.length >= 4 && eligibleTargets.length === 0 && (
             <div className="sidepanel-hint">No adjacent empty units available.</div>
           )}
 
@@ -490,10 +597,15 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                   <div className="target-main">
                     <div className="target-label">{t.label}</div>
                     <div className="target-meta">
+                      {t.unitIds.length > 1 && (
+                        <span className="pill">
+                          {t.pairRow ? `2 units · ${t.pairRow}` : '2 units'}
+                        </span>
+                      )}
                       <span className="pill">
-                        {t.kind === 'initial-group' ? 'full group · 4 units' : t.kind === 'cross-floor' ? 'cross-floor' : 'same level'}
+                        {t.kind === 'cross-floor' ? 'cross-floor' : 'same level'}
                       </span>
-                      {t.kind !== 'initial-group' && <span className="pill">dist {t.distance}</span>}
+                      <span className="pill">dist {t.distance}</span>
                     </div>
                   </div>
                 </button>
@@ -526,7 +638,11 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           onClick={submitAction}
           disabled={!currentUser || (currentUserAllUnits.length === 0 ? !selectedGroupId : !eligibleTargets.length)}
         >
-          {currentUserAllUnits.length === 0 ? 'Reserve Group' : 'Add Unit'}
+          {currentUserAllUnits.length === 0
+            ? 'Reserve Pair'
+            : currentUserAllUnits.length < 4
+            ? 'Add Pair'
+            : 'Add Unit'}
         </button>
         <button
           onClick={submitRelease}
@@ -544,25 +660,32 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         <div><span className="box selected"/> Selected</div>
         <div style={{marginLeft:12}}>
           {currentUserAllUnits.length === 0
-            ? 'Tip: click a cell to pick your starting group, then click "Reserve Group".'
-            : 'Tip: click an adjacent empty unit to add it. Click one of your own units (red border) then "Release Unit" to remove it.'}
+            ? 'Tip: click a cell, choose top or bottom pair from the panel, then click "Reserve Pair".'
+            : 'Tip: click an adjacent empty unit (same row) to add it. Click your own unit then "Release Unit" to remove it.'}
         </div>
       </div>
 
       {confirm && (
         <div className="modal-overlay">
           <div className="modal">
-            <h3>
-              {confirm.isRelease ? 'Confirm release' : confirm.isInitial ? 'Confirm reservation' : 'Confirm add unit'}
-            </h3>
-            <p>
-              {confirm.isRelease
-                ? <>Release unit <strong>{confirm.label}</strong> from your reservation?</>
-                : confirm.isInitial
-                  ? <>Reserve group <strong>{confirm.target.label}</strong> (4 units)?</>
-                  : <>Add unit <strong>{confirm.target.label}</strong> to your reservation?</>
-              }
-            </p>
+            {(() => {
+              const addCount = confirm.target?.unitIds?.length ?? 1
+              return (<>
+                <h3>
+                  {confirm.isRelease ? 'Confirm release'
+                    : confirm.isInitial ? 'Confirm reservation'
+                    : `Confirm add ${addCount > 1 ? addCount + ' units' : 'unit'}`}
+                </h3>
+                <p>
+                  {confirm.isRelease
+                    ? <>Release unit <strong>{confirm.label}</strong> on <strong>{actionDate}</strong>?</>
+                    : confirm.isInitial
+                      ? <>Reserve <strong>{confirm.target.label}</strong> (2 units) on <strong>{actionDate}</strong>?</>
+                      : <>Add <strong>{confirm.target.label}</strong>{addCount > 1 ? ` (${addCount} units)` : ''} on <strong>{actionDate}</strong>?</>
+                  }
+                </p>
+              </>)
+            })()}
             <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
               <button onClick={() => setConfirm(null)}>Cancel</button>
               <button onClick={() => {
@@ -572,18 +695,18 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                     setConfirm(null)
                     return alert('No longer valid:\n\n• ' + errors.join('\n• '))
                   }
-                  onUpdateUnit(confirm.unitId, { owner: null })
+                  onUpdateUnit(confirm.unitId, { owner: null, date: null })
                   setSelectedOwnUnitId(null)
                 } else if (confirm.isInitial) {
-                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser }))
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate }))
                 } else {
-                  const targetUnit = unitsById.get(confirm.target.unitIds[0])
-                  const errors = validateUpgrade(currentUserAllUnits, [targetUnit].filter(Boolean))
+                  const targetUnits = confirm.target.unitIds.map(id => unitsById.get(id)).filter(Boolean)
+                  const errors = validateUpgrade(currentUserAllUnits, targetUnits)
                   if (errors.length) {
                     setConfirm(null)
                     return alert('No longer valid:\n\n• ' + errors.join('\n• '))
                   }
-                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser }))
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate }))
                 }
                 setConfirm(null)
                 setSelectedGroupId(null)

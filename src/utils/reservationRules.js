@@ -1,5 +1,17 @@
 // Business logic for unit reservation upgrades and downgrades.
-// All functions operate on plain unit objects: { id, level, cellR, cellC, groupId, q, owner, x, y, w, h }
+// All functions operate on plain unit objects: { id, level, cellR, cellC, groupId, q, owner, startDate, endDate, x, y, w, h }
+
+// ---------------------------------------------------------------------------
+// Date helpers
+// ---------------------------------------------------------------------------
+
+// Validate that the action date is present and not in the past.
+export function validateActionDate(date) {
+  if (!date) return ['Please select a date for this action.']
+  const today = new Date().toISOString().split('T')[0]
+  if (date < today) return ['The action date cannot be in the past.']
+  return []
+}
 
 // ---------------------------------------------------------------------------
 // Adjacency model
@@ -14,6 +26,7 @@ function areQuadrantsAdjacent(q1, q2) {
   return EDGE_PAIRS.has(`${q1}-${q2}`)
 }
 
+// exported so callers can enumerate adjacent pairs for the +2 extension step
 export function areUnitsAdjacent(a, b) {
   // 1. Same cell — shared edge within the 2×2 grid
   if (a.level === b.level && a.groupId === b.groupId) {
@@ -43,6 +56,28 @@ export function areUnitsAdjacent(a, b) {
   }
 
   return false
+}
+
+// ---------------------------------------------------------------------------
+// Row restriction
+// ---------------------------------------------------------------------------
+
+// Returns the cellR all existing units share, or null when the set is empty or mixed.
+function getRequiredRow(existingUserUnits) {
+  if (!existingUserUnits.length) return null
+  const rows = new Set(existingUserUnits.map(u => u.cellR))
+  return rows.size === 1 ? [...rows][0] : null
+}
+
+// Within the same level, a target unit must share cellR with the existing reservation.
+// Cross-floor targets (different level) are exempt from this restriction.
+function isRowCompatible(existingUserUnits, targetUnits) {
+  const requiredRow = getRequiredRow(existingUserUnits)
+  if (requiredRow === null) return true
+  const existingLevels = new Set(existingUserUnits.map(u => u.level))
+  return targetUnits.every(t =>
+    !existingLevels.has(t.level) || t.cellR === requiredRow
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -119,11 +154,19 @@ export function isConnectedToExistingUnits(existingUserUnits, targetUnits) {
 export function validateUpgrade(currentUserUnits, targetUnits) {
   const errors = []
 
-  // Rule 1 — minimum reservation size
+  // Rule 1 — minimum reservation size (2 units)
   const newTotal = currentUserUnits.length + targetUnits.length
-  if (newTotal < 4) {
+  if (newTotal < 2) {
     errors.push(
-      `Minimum 4 units required. This upgrade would give you only ${newTotal} unit(s).`
+      `Minimum 2 units required. This upgrade would give you only ${newTotal} unit(s).`
+    )
+  }
+
+  // Row restriction — same cellR within the same floor; cross-floor is exempt
+  if (currentUserUnits.length > 0 && !isRowCompatible(currentUserUnits, targetUnits)) {
+    const row = getRequiredRow(currentUserUnits)
+    errors.push(
+      `Units must stay within row ${row} on the same floor. Cross-row upgrades are not permitted.`
     )
   }
 
@@ -164,10 +207,10 @@ export function validateDowngrade(currentUserUnits, unitToReleaseId) {
   // Full cancellation is always allowed
   if (remaining.length === 0) return errors
 
-  // Rule 1 — minimum size
-  if (remaining.length < 4) {
+  // Rule 1 — minimum size (2 units)
+  if (remaining.length < 2) {
     errors.push(
-      `Cannot release: minimum reservation is 4 units. Releasing this unit would leave you with ${remaining.length} unit(s). Release all units to cancel entirely.`
+      `Cannot release: minimum reservation is 2 units. Releasing this unit would leave you with ${remaining.length} unit(s). Release all units to cancel entirely.`
     )
   }
 
@@ -196,6 +239,7 @@ export function validateDowngrade(currentUserUnits, unitToReleaseId) {
  * @param {object[]} targetUnits       Candidate upgrade pair
  */
 export function isUpgradeTargetEligible(currentUserUnits, targetUnits) {
+  if (!isRowCompatible(currentUserUnits, targetUnits)) return false
   if (!isConnectedToExistingUnits(currentUserUnits, targetUnits)) return false
   if (!hasServiceAreaConnection([...currentUserUnits, ...targetUnits])) return false
   return true

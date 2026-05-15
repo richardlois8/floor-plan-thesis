@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import FloorPlan from './components/FloorPlan'
 
 // Minimal in-memory data model with localStorage persistence
@@ -195,6 +195,7 @@ const defaultUnits = () => {
               groupId: cellId,
               q: quadrant,
               owner: null,
+              date: null,
               x,
               y,
               w: subW,
@@ -206,11 +207,14 @@ const defaultUnits = () => {
     }
   }
 
-  // Demo seed: each "user" owns an entire cell (4 sub-units)
+  // Demo seed: each "user" owns an entire cell (4 sub-units) with an open-ended period
   const seedCellOwner = (level, cellR, cellC, owner) => {
     const levelUnits = levels[level]?.units || []
     for (const u of levelUnits) {
-      if (u.level === level && u.cellR === cellR && u.cellC === cellC) u.owner = owner
+      if (u.level === level && u.cellR === cellR && u.cellC === cellC) {
+        u.owner = owner
+        u.date = '2000-01-01'
+      }
     }
   }
   seedCellOwner(0, 0, 0, 'alice')
@@ -220,12 +224,23 @@ const defaultUnits = () => {
   return levels
 }
 
+// Ensure every unit has a date field — migrate from old startDate/endDate or bare owner format.
+const migrateUnit = u => {
+  const { startDate, endDate, ...rest } = u
+  return { ...rest, date: u.date ?? startDate ?? (u.owner ? '2000-01-01' : null) }
+}
+
 const normalizeState = (data) => {
-  if (data?.levels) return data
+  if (data?.levels) {
+    return {
+      ...data,
+      levels: data.levels.map(lvl => ({ ...lvl, units: lvl.units.map(migrateUnit) }))
+    }
+  }
   if (Array.isArray(data?.units)) {
     const levels = layoutConfig.levels.map((_, level) => ({
       level,
-      units: data.units.filter(u => u.level === level)
+      units: data.units.filter(u => u.level === level).map(migrateUnit)
     }))
     return { levels }
   }
@@ -270,34 +285,100 @@ export default function App() {
 
   const hallways = buildHallways()
 
+  // Derive all current owners with unit counts from live state
+  const existingUsers = useMemo(() => {
+    const counts = new Map()
+    state.levels.forEach(lvl => lvl.units.forEach(u => {
+      if (u.owner) counts.set(u.owner, (counts.get(u.owner) || 0) + 1)
+    }))
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [state])
+
+  const currentUserUnitCount = existingUsers.find(u => u.name === currentUser)?.count ?? 0
+
   return (
     <div className="app">
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h1>Floor Plan Booking (Demo)</h1>
-        <div>
-          {currentUser ? (
-            <div>
-              <span style={{marginRight:8}}>User: <strong>{currentUser}</strong></span>
-              <button onClick={() => setCurrentUser('')}>Logout</button>
-            </div>
-          ) : (
-            <UserLogin onSetUser={setCurrentUser} />
+      <div className="app-header">
+        <div className="app-title-row">
+          <h1 className="app-title">Floor Plan Booking</h1>
+          {currentUser && (
+            <UserBadge
+              name={currentUser}
+              unitCount={currentUserUnitCount}
+              onLogout={() => setCurrentUser('')}
+            />
           )}
         </div>
+        {!currentUser && (
+          <UserSelector existingUsers={existingUsers} onSetUser={setCurrentUser} />
+        )}
       </div>
-
-  <p>Each big cell is 4 small squares. You must own all 4 to start, then you can extend by +2 squares (same level or above/below).</p>
       <FloorPlan levels={state.levels} hallways={hallways} onUpdateUnit={updateUnit} currentUser={currentUser} resetApp={resetState} />
     </div>
   )
 }
 
-function UserLogin({ onSetUser }) {
-  const [name, setName] = useState('')
+// ── Deterministic avatar colour based on name ──────────────────────────────
+const AVATAR_COLORS = ['#4f46e5','#0891b2','#059669','#d97706','#dc2626','#7c3aed','#db2777']
+const avatarColor = name => AVATAR_COLORS[(name.charCodeAt(0) + name.length) % AVATAR_COLORS.length]
+
+// ── Compact badge shown in the header when a user is logged in ─────────────
+function UserBadge({ name, unitCount, onLogout }) {
   return (
-    <span>
-      <input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
-      <button onClick={() => name && onSetUser(name)}>Set User</button>
-    </span>
+    <div className="user-badge">
+      <span className="user-avatar" style={{ background: avatarColor(name) }}>
+        {name[0].toUpperCase()}
+      </span>
+      <div className="user-badge-info">
+        <span className="user-badge-name">{name}</span>
+        <span className="user-badge-meta">{unitCount} unit{unitCount !== 1 ? 's' : ''} reserved</span>
+      </div>
+      <button className="user-logout-btn" onClick={onLogout}>Logout</button>
+    </div>
+  )
+}
+
+// ── Full selector shown below the header when no user is logged in ─────────
+function UserSelector({ existingUsers, onSetUser }) {
+  const [newName, setNewName] = useState('')
+
+  const handleJoin = () => {
+    const name = newName.trim()
+    if (name) { onSetUser(name); setNewName('') }
+  }
+
+  return (
+    <div className="user-selector">
+      {existingUsers.length > 0 && (
+        <div className="user-selector-section">
+          <span className="user-selector-label">Login as existing user</span>
+          <div className="user-card-list">
+            {existingUsers.map(u => (
+              <button key={u.name} className="user-card" onClick={() => onSetUser(u.name)}>
+                <span className="user-avatar user-avatar--sm" style={{ background: avatarColor(u.name) }}>
+                  {u.name[0].toUpperCase()}
+                </span>
+                <span className="user-card-name">{u.name}</span>
+                <span className="user-card-count">{u.count} unit{u.count !== 1 ? 's' : ''}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="user-selector-divider">or join as new user</div>
+      <div className="user-new-form">
+        <input
+          className="user-new-input"
+          placeholder="Enter your name…"
+          value={newName}
+          onChange={e => setNewName(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleJoin()}
+          autoFocus
+        />
+        <button onClick={handleJoin} disabled={!newName.trim()}>Join</button>
+      </div>
+    </div>
   )
 }
