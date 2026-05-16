@@ -58,6 +58,24 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     return s
   }, [flatUnits])
 
+  // Pending future actions — grouped by (type, user, date, cell)
+  const pendingActions = useMemo(() => {
+    const groups = new Map()
+    flatUnits.forEach(u => {
+      if (u.owner && u.date && u.date > todayISO) {
+        const key = `reserve:${u.owner}:${u.date}:${u.groupId}`
+        if (!groups.has(key)) groups.set(key, { type: 'reserve', user: u.owner, date: u.date, groupId: u.groupId, qs: [] })
+        groups.get(key).qs.push(u.q)
+      }
+      if (!u.owner && u.availableFrom && u.availableFrom > todayISO) {
+        const key = `release:${u.releasedBy ?? ''}:${u.availableFrom}:${u.groupId}`
+        if (!groups.has(key)) groups.set(key, { type: 'release', user: u.releasedBy || '—', date: u.availableFrom, groupId: u.groupId, qs: [] })
+        groups.get(key).qs.push(u.q)
+      }
+    })
+    return [...groups.values()].sort((a, b) => a.date.localeCompare(b.date) || a.type.localeCompare(b.type))
+  }, [flatUnits, todayISO])
+
   const selectUnit = u => {
     setSelectedGroupId(u.groupId || null)
     setSelectedTargetKey(null)
@@ -193,12 +211,12 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         const errors = validateUpgrade(currentUserAllUnits, [u])
         if (errors.length) return showAlert('Cannot claim', errors)
       }
-      onUpdateUnit(u.id, { owner: currentUser, date: actionDate, availableFrom: null })
+      onUpdateUnit(u.id, { owner: currentUser, date: actionDate, availableFrom: null, releasedBy: null })
     } else if (u.owner === currentUser) {
       // Releasing (downgrade): validate all rules before allowing the release
       const errors = validateDowngrade(currentUserAllUnits, u.id)
       if (errors.length) return showAlert('Release not allowed', errors)
-      onUpdateUnit(u.id, { owner: null, date: null, availableFrom: actionDate })
+      onUpdateUnit(u.id, { owner: null, date: null, availableFrom: actionDate, releasedBy: currentUser })
     } else {
       showAlert('Unit occupied', `This unit is reserved by ${u.owner}.`)
     }
@@ -350,7 +368,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       levelUnits.forEach(u => {
         const occupied = !!u.owner
         const ownedByMe = u.owner === currentUser
-        const pendingAvailable = !occupied && !!u.availableFrom && actionDate < u.availableFrom
+        const pendingAvailable = !occupied && !!u.availableFrom && u.availableFrom > todayISO
         const fillColor = occupied
           ? (ownedByMe ? '#2563eb' : '#334155')
           : pendingAvailable
@@ -708,6 +726,45 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         </div>
       </div>
 
+      <section className="scheduled-requests">
+        <h2 className="sr-heading">Scheduled Requests</h2>
+        {pendingActions.length === 0 ? (
+          <p className="sr-empty">No upcoming scheduled actions.</p>
+        ) : (
+          <div className="sr-table-wrap">
+            <table className="sr-table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Cell / Units</th>
+                  <th>User</th>
+                  <th>Action Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingActions.map((a, i) => {
+                  const label = a.qs.length === 4
+                    ? a.groupId
+                    : `${a.groupId} · ${a.qs.sort().map(q => `Q${q}`).join(', ')}`
+                  return (
+                    <tr key={i}>
+                      <td>
+                        <span className={`sr-badge sr-badge--${a.type}`}>
+                          {a.type === 'reserve' ? 'Reserve' : 'Release'}
+                        </span>
+                      </td>
+                      <td className="sr-label">{label}</td>
+                      <td className="sr-user">{a.user}</td>
+                      <td className="sr-date">{a.date}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       {confirm && (
         <div className="modal-overlay">
           <div className="modal">
@@ -738,10 +795,10 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                     setConfirm(null)
                     return showAlert('No longer valid', errors)
                   }
-                  onUpdateUnit(confirm.unitId, { owner: null, date: null, availableFrom: actionDate })
+                  onUpdateUnit(confirm.unitId, { owner: null, date: null, availableFrom: actionDate, releasedBy: currentUser })
                   setSelectedOwnUnitId(null)
                 } else if (confirm.isInitial) {
-                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate, availableFrom: null }))
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate, availableFrom: null, releasedBy: null }))
                 } else {
                   const targetUnits = confirm.target.unitIds.map(id => unitsById.get(id)).filter(Boolean)
                   const errors = validateUpgrade(currentUserAllUnits, targetUnits)
@@ -749,7 +806,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                     setConfirm(null)
                     return showAlert('No longer valid', errors)
                   }
-                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate, availableFrom: null }))
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate, availableFrom: null, releasedBy: null }))
                 }
                 setConfirm(null)
                 setSelectedGroupId(null)

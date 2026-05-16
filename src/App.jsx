@@ -197,6 +197,7 @@ const defaultUnits = () => {
               owner: null,
               date: null,
               availableFrom: null,
+              releasedBy: null,
               x,
               y,
               w: subW,
@@ -232,6 +233,7 @@ const migrateUnit = u => {
     ...rest,
     date: u.date ?? startDate ?? (u.owner ? '2000-01-01' : null),
     availableFrom: u.availableFrom ?? null,
+    releasedBy: u.releasedBy ?? null,
   }
 }
 

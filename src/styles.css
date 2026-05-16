@@ -602,6 +602,100 @@ button:disabled {
   margin-bottom: 4px;
 }
 
+/* ── Scheduled Requests section ───────────────────────────────────────── */
+.scheduled-requests {
+  margin: 24px 0 0;
+  padding: 20px 24px;
+  background: #fff;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+.sr-heading {
+  margin: 0 0 14px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1e293b;
+  letter-spacing: 0.01em;
+}
+
+.sr-empty {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.875rem;
+}
+
+.sr-table-wrap {
+  overflow-x: auto;
+}
+
+.sr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.sr-table th {
+  padding: 6px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  border-bottom: 1px solid rgba(100, 116, 139, 0.18);
+}
+
+.sr-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(100, 116, 139, 0.10);
+  vertical-align: middle;
+}
+
+.sr-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.sr-table tbody tr:hover td {
+  background: rgba(241, 245, 249, 0.7);
+}
+
+.sr-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.sr-badge--reserve {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+}
+
+.sr-badge--release {
+  background: rgba(234, 88, 12, 0.12);
+  color: #c2410c;
+}
+
+.sr-label {
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  font-size: 0.8rem;
+  color: #334155;
+}
+
+.sr-user {
+  color: #475569;
+  font-weight: 500;
+}
+
+.sr-date {
+  color: #64748b;
+  white-space: nowrap;
+}
+
 @media (max-width: 980px) {
   .layout {
     grid-template-columns: 1fr;
