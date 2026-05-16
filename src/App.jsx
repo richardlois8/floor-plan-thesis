@@ -371,7 +371,7 @@ function UserSelector({ existingUsers, onSetUser }) {
       <div className="user-new-form">
         <input
           className="user-new-input"
-          placeholder="Enter your name…"
+          placeholder="Enter your name..."
           value={newName}
           onChange={e => setNewName(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleJoin()}

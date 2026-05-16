@@ -27,6 +27,19 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const flatUnits = useMemo(() => levels.flatMap(level => level.units), [levels])
   const unitsById = useMemo(() => new Map(flatUnits.map(u => [u.id, u])), [flatUnits])
   const levelUnitsMap = useMemo(() => new Map(levels.map(level => [level.level, level.units])), [levels])
+  const planStats = useMemo(() => {
+    const occupied = flatUnits.filter(u => u.owner).length
+    const ownedByCurrentUser = currentUser
+      ? flatUnits.filter(u => u.owner === currentUser).length
+      : 0
+
+    return {
+      total: flatUnits.length,
+      available: flatUnits.length - occupied,
+      occupied,
+      ownedByCurrentUser,
+    }
+  }, [flatUnits, currentUser])
 
   // Units the current user currently owns
   const currentUserAllUnits = useMemo(
@@ -75,9 +88,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     // ── PHASE 1: INITIAL RESERVATION (user has no units yet) ─────────────────
     // Rules:
     //  • Only allow starting in a row that already has at least one tenant.
-    //  • Only offer the pair that faces AWAY from the hallway/service area:
-    //      CR0 → top pair (Q0+Q1)   — bottom (Q2+Q3) overlaps the service bar
-    //      CR1 → bottom pair (Q2+Q3) — top (Q0+Q1) overlaps the service bar
+    //  • The full 4-unit cell must be available (no partial reservations).
     if (currentUserAllUnits.length === 0) {
       if (!selectedGroupId) return []
       const g = groupUnits.get(selectedGroupId) || []
@@ -92,94 +103,39 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       )
       if (!rowIsRegistered) return []
 
-      // Offer only the outward-facing pair (away from the hallway)
-      if (cellRow === 0) {
-        // Top-row cell → top pair (Q0+Q1) faces outward; Q2+Q3 would face the hallway
-        const topPair = [g.find(u => u.q === 0), g.find(u => u.q === 1)].filter(Boolean)
-        if (topPair.length === 2 && topPair.every(u => !u.owner)) {
-          return [{
-            key: `INIT:${selectedGroupId}:top`,
-            kind: 'initial-pair',
-            label: `${selectedGroupId} — top pair`,
-            unitIds: topPair.map(u => u.id),
-            distance: 0,
-            pairRow: 'top'
-          }]
-        }
-      } else {
-        // Bottom-row cell → bottom pair (Q2+Q3) faces outward; Q0+Q1 would face the hallway
-        const botPair = [g.find(u => u.q === 2), g.find(u => u.q === 3)].filter(Boolean)
-        if (botPair.length === 2 && botPair.every(u => !u.owner)) {
-          return [{
-            key: `INIT:${selectedGroupId}:bot`,
-            kind: 'initial-pair',
-            label: `${selectedGroupId} — bottom pair`,
-            unitIds: botPair.map(u => u.id),
-            distance: 0,
-            pairRow: 'bottom'
-          }]
-        }
+      // First reservation is the full 4-unit cell (all sub-units must be available)
+      if (g.length === 4 && g.every(u => !u.owner)) {
+        return [{
+          key: `INIT:${selectedGroupId}:full`,
+          kind: 'initial-cell',
+          label: selectedGroupId,
+          unitIds: g.map(u => u.id),
+          distance: 0,
+        }]
       }
       return []
     }
 
     // ── PHASE 2: EXTENSION ───────────────────────────────────────────────────
-    // Below 4 units total → must add 2 at a time (enumerate adjacent empty pairs).
-    // At 4 or more units → add 1 at a time.
+    // Add 1 empty adjacent unit at a time (registered rows only).
     const userLevels = new Set(currentUserAllUnits.map(u => u.level))
     const userCx = currentUserAllUnits.reduce((s, u) => s + u.x + u.w / 2, 0) / currentUserAllUnits.length
     const userCy = currentUserAllUnits.reduce((s, u) => s + u.y + u.h / 2, 0) / currentUserAllUnits.length
 
     const targets = []
-
-    if (currentUserAllUnits.length < 4) {
-      // ── Pair mode: add 2 adjacent empty units (registered rows only) ────────
-      const emptyUnits = flatUnits.filter(u => !u.owner && registeredRows.has(`${u.level}-${u.cellR}`))
-      for (let i = 0; i < emptyUnits.length; i++) {
-        for (let j = i + 1; j < emptyUnits.length; j++) {
-          const a = emptyUnits[i]
-          const b = emptyUnits[j]
-          if (!areUnitsAdjacent(a, b)) continue
-          if (!isUpgradeTargetEligible(currentUserAllUnits, [a, b])) continue
-
-          const cx = (a.x + a.w / 2 + b.x + b.w / 2) / 2
-          const cy = (a.y + a.h / 2 + b.y + b.h / 2) / 2
-
-          let label, pairRow
-          if (a.groupId === b.groupId) {
-            pairRow = [0, 1].includes(a.q) && [0, 1].includes(b.q) ? 'top' : 'bottom'
-            label = `${a.groupId} — ${pairRow}`
-          } else {
-            pairRow = null
-            label = `${a.id} + ${b.id}`
-          }
-
-          targets.push({
-            key: `PAIR:${[a.id, b.id].sort().join('|')}`,
-            kind: userLevels.has(a.level) && userLevels.has(b.level) ? 'same-level' : 'cross-floor',
-            label,
-            unitIds: [a.id, b.id],
-            distance: Math.round(Math.hypot(cx - userCx, cy - userCy)),
-            pairRow
-          })
-        }
-      }
-    } else {
-      // ── Single-unit mode: add 1 empty adjacent unit (registered rows only) ─
-      for (const u of flatUnits) {
-        if (u.owner) continue
-        if (!registeredRows.has(`${u.level}-${u.cellR}`)) continue
-        if (!isUpgradeTargetEligible(currentUserAllUnits, [u])) continue
-        const cx = u.x + u.w / 2
-        const cy = u.y + u.h / 2
-        targets.push({
-          key: `U:${u.id}`,
-          kind: userLevels.has(u.level) ? 'same-level' : 'cross-floor',
-          label: u.id,
-          unitIds: [u.id],
-          distance: Math.round(Math.hypot(cx - userCx, cy - userCy))
-        })
-      }
+    for (const u of flatUnits) {
+      if (u.owner) continue
+      if (!registeredRows.has(`${u.level}-${u.cellR}`)) continue
+      if (!isUpgradeTargetEligible(currentUserAllUnits, [u])) continue
+      const cx = u.x + u.w / 2
+      const cy = u.y + u.h / 2
+      targets.push({
+        key: `U:${u.id}`,
+        kind: userLevels.has(u.level) ? 'same-level' : 'cross-floor',
+        label: u.id,
+        unitIds: [u.id],
+        distance: Math.round(Math.hypot(cx - userCx, cy - userCy))
+      })
     }
 
     return targets.sort((a, b) => a.distance - b.distance)
@@ -188,29 +144,24 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const submitAction = () => {
     if (!currentUser) return alert('Please set your user name first')
     const dateErrors = validateActionDate(actionDate)
-    if (dateErrors.length) return alert('Invalid date:\n\n• ' + dateErrors.join('\n• '))
+    if (dateErrors.length) return alert('Invalid date:\n\n- ' + dateErrors.join('\n- '))
 
     if (currentUserAllUnits.length === 0) {
-      // Phase 1: initial pair reservation (top or bottom pair of the selected cell)
+      // Phase 1: initial full-cell reservation (4 units)
       if (!selectedGroupId) return alert('Click any cell on the floor plan to select your starting location')
-      if (!eligibleTargets.length) return alert('No available pairs in this cell. Pick another one.')
-      const pairTarget = eligibleTargets.find(t => t.key === selectedTargetKey && t.kind === 'initial-pair')
-        || eligibleTargets.find(t => t.kind === 'initial-pair')
-      if (!pairTarget) return alert('No available pairs in this cell. Pick another one.')
-      setSelectedTargetKey(pairTarget.key)
-      setConfirm({ isInitial: true, target: pairTarget })
+      if (!eligibleTargets.length) return alert('This cell is not available. Pick another one.')
+      const cellTarget = eligibleTargets.find(t => t.key === selectedTargetKey && t.kind === 'initial-cell')
+        || eligibleTargets.find(t => t.kind === 'initial-cell')
+      if (!cellTarget) return alert('This cell is not available. Pick another one.')
+      setSelectedTargetKey(cellTarget.key)
+      setConfirm({ isInitial: true, target: cellTarget })
     } else {
-      // Phase 2: pair addition (< 4 units) or single-unit addition (≥ 4 units)
-      const isPairMode = currentUserAllUnits.length < 4
-      if (!eligibleTargets.length) return alert(
-        isPairMode ? 'No adjacent pair available to add.' : 'No adjacent empty units available to add.'
-      )
+      // Phase 2: add 1 unit at a time
+      if (!eligibleTargets.length) return alert('No adjacent empty units available to add.')
       const target = eligibleTargets.find(t => t.key === selectedTargetKey) || eligibleTargets[0]
       const targetUnits = target.unitIds.map(id => unitsById.get(id)).filter(Boolean)
       const errors = validateUpgrade(currentUserAllUnits, targetUnits)
-      if (errors.length) return alert(
-        `Cannot add ${targetUnits.length > 1 ? 'pair' : 'unit'}:\n\n• ` + errors.join('\n• ')
-      )
+      if (errors.length) return alert('Cannot add unit:\n\n- ' + errors.join('\n- '))
       setSelectedTargetKey(target.key)
       setConfirm({ isInitial: false, target })
     }
@@ -219,7 +170,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const submitRelease = () => {
     if (!selectedOwnUnitId) return
     const errors = validateDowngrade(currentUserAllUnits, selectedOwnUnitId)
-    if (errors.length) return alert('Release not allowed:\n\n• ' + errors.join('\n• '))
+    if (errors.length) return alert('Release not allowed:\n\n- ' + errors.join('\n- '))
     setConfirm({ isRelease: true, unitId: selectedOwnUnitId, label: selectedOwnUnitId })
   }
 
@@ -232,13 +183,13 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       }
       if (currentUserAllUnits.length > 0) {
         const errors = validateUpgrade(currentUserAllUnits, [u])
-        if (errors.length) return alert('Cannot claim:\n\n• ' + errors.join('\n• '))
+        if (errors.length) return alert('Cannot claim:\n\n- ' + errors.join('\n- '))
       }
       onUpdateUnit(u.id, { owner: currentUser, date: actionDate })
     } else if (u.owner === currentUser) {
       // Releasing (downgrade): validate all rules before allowing the release
       const errors = validateDowngrade(currentUserAllUnits, u.id)
-      if (errors.length) return alert('Release not allowed:\n\n• ' + errors.join('\n• '))
+      if (errors.length) return alert('Release not allowed:\n\n- ' + errors.join('\n- '))
       onUpdateUnit(u.id, { owner: null })
     } else {
       alert('This unit is owned by ' + u.owner)
@@ -311,22 +262,21 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           .rect(bandW, bandH)
           .move(bandX, minY - padY)
           .radius(20)
-          // .fill(levelIndex === 0 ? 'rgba(220,235,250,0.65)' : 'rgba(230,235,245,0.7)')
-          .fill('rgba(230,235,245,0.7)')
-          .stroke({ color: 'rgba(30,40,60,0.35)', width: 1 })
+          .fill(levelIndex === 0 ? 'rgba(239, 246, 255, 0.92)' : 'rgba(236, 253, 245, 0.88)')
+          .stroke({ color: levelIndex === 0 ? 'rgba(37, 99, 235, 0.20)' : 'rgba(5, 150, 105, 0.22)', width: 1.5 })
 
         draw
           .rect(bandW, 30)
           .move(bandX, bandY)
           .radius(10)
-          .fill('rgba(40,120,200,0.32)')
-          .stroke({ color: 'rgba(40,60,80,0.55)', width: 1 })
+          .fill(levelIndex === 0 ? 'rgba(37, 99, 235, 0.18)' : 'rgba(5, 150, 105, 0.18)')
+          .stroke({ color: levelIndex === 0 ? 'rgba(37, 99, 235, 0.38)' : 'rgba(5, 150, 105, 0.38)', width: 1 })
 
         draw
           .text(labelText)
           .move(bandX + 14, bandY + 6)
           .font({ size: 14, family: 'Inter, Segoe UI, Arial', anchor: 'start' })
-          .fill('rgba(25,35,55,0.9)')
+          .fill('#102033')
       }
 
       // hallway/service zones (drawn after band so they appear on top of it)
@@ -342,15 +292,15 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
             .rect(h.w, h.h)
             .move(h.x, h.y)
             // .radius(14)
-            .fill('#DCDCDC')
-            .stroke({ color: '#DCDCDC', width: 2, dasharray: [8, 6] })
+            .fill('rgba(226, 232, 240, 0.86)')
+            .stroke({ color: 'rgba(148, 163, 184, 0.55)', width: 2, dasharray: [8, 6] })
           zone.addClass('hallway-rect')
           if (h.label) {
             draw
               .text(h.label)
               .move(h.x + 12, h.y + 10)
               .font({ size: 13, family: 'Inter, Segoe UI, Arial', anchor: 'start' })
-              .fill('rgba(0, 0, 0, 0.9)')
+              .fill('#475569')
           }
         })
 
@@ -359,8 +309,8 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
             .rect(h.w, h.h)
             .move(h.x, h.y)
             .radius(2)
-            .fill('#00a878')
-            .stroke({ color: '#007a56', width: 2 })
+            .fill('#14b8a6')
+            .stroke({ color: '#0f766e', width: 2 })
         })
       }
 
@@ -380,8 +330,8 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           // .radius(14)
           .fill('transparent')
           .stroke({
-            color: isSelected ? '#ff8a00' : 'rgba(0,0,0,0.15)',
-            width: isSelected ? 3 : 1,
+            color: isSelected ? '#f97316' : 'rgba(100,116,139,0.22)',
+            width: isSelected ? 3 : 1.25,
             dasharray: []
           })
 
@@ -396,12 +346,12 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           .rect(u.w, u.h)
           .move(u.x, u.y)
           .radius(0)
-          .fill(occupied ? 'rgba(30, 30, 30, 0.58)' : 'rgba(255, 255, 255, 0.35)')
-          .stroke({ color: '#0000003b', width: 1 })
+          .fill(occupied ? (ownedByMe ? '#2563eb' : '#334155') : 'rgba(255, 255, 255, 0.72)')
+          .stroke({ color: occupied ? 'rgba(15, 23, 42, 0.32)' : 'rgba(148, 163, 184, 0.45)', width: 1 })
 
         // Tooltip: show who reserved it and when
         if (occupied) {
-          rect.element('title').words(`${u.owner}  •  reserved ${u.date ?? '—'}`)
+          rect.element('title').words(`${u.owner} - reserved ${u.date ?? '-'}`)
         }
 
         rect.attr({ 'data-id': u.id })
@@ -437,17 +387,10 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
               selectUnit(u)
             }
           } else if (!u.owner) {
-            // Phase 2: toggle the eligible target containing this unit
-            if (currentUserAllUnits.length >= 4) {
-              const key = `U:${u.id}`
-              if (eligibleTargets.some(t => t.key === key)) {
-                setSelectedTargetKey(prev => prev === key ? null : key)
-              }
-            } else {
-              const pair = eligibleTargets.find(t => t.unitIds.includes(u.id))
-              if (pair) {
-                setSelectedTargetKey(prev => prev === pair.key ? null : pair.key)
-              }
+            // Phase 2: toggle the single-unit eligible target
+            const key = `U:${u.id}`
+            if (eligibleTargets.some(t => t.key === key)) {
+              setSelectedTargetKey(prev => prev === key ? null : key)
             }
             setSelectedGroupId(u.groupId || null)
             setSelectedOwnUnitId(null)
@@ -502,7 +445,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           const hl = draw
             .rect(hlX2 - hlX, hlY2 - hlY)
             .move(hlX, hlY)
-            .fill('rgba(245,158,11,0.10)')
+            .fill('rgba(245,158,11,0.14)')
             .stroke({ color: '#f59e0b', width: 2, dasharray: [5, 4] })
 
           hl.css({ cursor: 'pointer' })
@@ -558,13 +501,13 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       const isInSelCell = selectedUnits.has(id)
       const isSelectedForRelease = id === selectedOwnUnitId
 
-      let strokeColor = occupied ? '#0000003b' : '#0000003b'
+      let strokeColor = occupied ? 'rgba(15, 23, 42, 0.32)' : 'rgba(148, 163, 184, 0.45)'
       let strokeWidth = 1
       if (isSelectedForRelease) {
-        strokeColor = '#e74c3c'
+        strokeColor = '#dc2626'
         strokeWidth = 4
       } else if (isInSelCell) {
-        strokeColor = '#ff8a00'
+        strokeColor = '#f97316'
         strokeWidth = 4
       }
       obj.rect.stroke({ width: strokeWidth, color: strokeColor })
@@ -573,15 +516,15 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     // highlight chosen target
     for (const [key, hl] of targetElsRef.current.entries()) {
       const isSelTarget = key === selectedTargetKey
-      hl.stroke({ width: isSelTarget ? 5 : 2 })
-      hl.fill({ opacity: isSelTarget ? 0.22 : 0.10 })
+      hl.stroke({ width: isSelTarget ? 5 : 2, color: isSelTarget ? '#0ea5e9' : '#f59e0b' })
+      hl.fill(isSelTarget ? 'rgba(14,165,233,0.20)' : 'rgba(245,158,11,0.14)')
     }
 
     // highlight selected cell boundary
     for (const [gid, boundary] of cellElsRef.current.entries()) {
       const isSelected = gid === selectedGroupId
       boundary.stroke({
-        color: isSelected ? '#ff8a00' : 'rgba(0,0,0,0.15)',
+        color: isSelected ? '#f97316' : 'rgba(100,116,139,0.22)',
         width: isSelected ? 3 : 1
       })
     }
@@ -589,6 +532,25 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
 
   return (
     <div className="floorplan-wrap">
+      <section className="plan-overview" aria-label="Floor plan summary">
+        <div className="overview-card">
+          <span className="overview-label">Total units</span>
+          <strong>{planStats.total}</strong>
+        </div>
+        <div className="overview-card">
+          <span className="overview-label">Available</span>
+          <strong>{planStats.available}</strong>
+        </div>
+        <div className="overview-card">
+          <span className="overview-label">Occupied</span>
+          <strong>{planStats.occupied}</strong>
+        </div>
+        <div className="overview-card overview-card--accent">
+          <span className="overview-label">Your units</span>
+          <strong>{planStats.ownedByCurrentUser}</strong>
+        </div>
+      </section>
+
       <div className="layout">
         <div className="floorplan-levels">
           {levels.map(level => (
@@ -604,6 +566,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         </div>
 
         <aside className="sidepanel">
+          <div className="panel-kicker">Reservation controls</div>
           {/* ── Action date ───────────────────────────────────────── */}
           <div className="sidepanel-title">Action date</div>
           <div className="date-picker-row">
@@ -618,8 +581,6 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           <div className="sidepanel-title" style={{marginTop: 14}}>
             {currentUserAllUnits.length === 0
               ? 'New reservation'
-              : currentUserAllUnits.length < 4
-              ? 'Extend reservation (+2 units)'
               : 'Add a unit'}
           </div>
 
@@ -627,7 +588,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
             <div className="sidepanel-hint">Set your user name to make a reservation.</div>
           )}
           {currentUser && currentUserAllUnits.length === 0 && !selectedGroupId && (
-            <div className="sidepanel-hint">Click any cell to pick your starting location (minimum 2 units).</div>
+            <div className="sidepanel-hint">Click any cell to select your starting location.</div>
           )}
           {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length === 0 && (() => {
             const g = groupUnits.get(selectedGroupId) || []
@@ -635,22 +596,17 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
             const cellRow   = g[0]?.cellR
             const rowRegistered = flatUnits.some(u => u.owner && u.level === cellLevel && u.cellR === cellRow)
             return rowRegistered
-              ? <div className="sidepanel-hint">The available pair in this cell is occupied. Pick another cell in the same row.</div>
-              : <div className="sidepanel-hint">This row has no existing reservations yet — new registrations are not permitted here. Choose a cell in a registered row.</div>
+              ? <div className="sidepanel-hint">This cell is already partially or fully occupied. Pick another cell in the same row.</div>
+              : <div className="sidepanel-hint">This row has no existing reservations yet. New registrations are not permitted here. Choose a cell in a registered row.</div>
           })()}
           {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length > 0 && (
-            <div className="sidepanel-hint">Choose top or bottom pair, then click <strong>Reserve Pair</strong>.</div>
+            <div className="sidepanel-hint">Click <strong>Reserve Cell</strong> to reserve all 4 units in this cell.</div>
           )}
-          {currentUser && currentUserAllUnits.length > 0 && currentUserAllUnits.length < 4 && eligibleTargets.length === 0 && (
-            <div className="sidepanel-hint">No adjacent pairs available. Check a different direction.</div>
-          )}
-          {currentUser && currentUserAllUnits.length > 0 && currentUserAllUnits.length < 4 && eligibleTargets.length > 0 && (
-            <div className="sidepanel-hint">
-              Pick a pair below to reach {currentUserAllUnits.length + 2} units, then you can add one at a time.
-            </div>
-          )}
-          {currentUser && currentUserAllUnits.length >= 4 && eligibleTargets.length === 0 && (
+          {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length === 0 && (
             <div className="sidepanel-hint">No adjacent empty units available.</div>
+          )}
+          {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length > 0 && (
+            <div className="sidepanel-hint">Click an adjacent empty unit to add it to your reservation.</div>
           )}
 
           {eligibleTargets.length > 0 && (
@@ -666,7 +622,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                     <div className="target-meta">
                       {t.unitIds.length > 1 && (
                         <span className="pill">
-                          {t.pairRow ? `2 units · ${t.pairRow}` : '2 units'}
+                          {t.pairRow ? `2 units / ${t.pairRow}` : '2 units'}
                         </span>
                       )}
                       <span className="pill">
@@ -691,7 +647,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                 const errors = validateDowngrade(currentUserAllUnits, selectedOwnUnitId)
                 return errors.length > 0
                   ? errors.map((e, i) => (
-                      <div key={i} className="sidepanel-hint" style={{color:'#c0392b'}}>⚠ {e}</div>
+                      <div key={i} className="sidepanel-hint sidepanel-hint--danger">{e}</div>
                     ))
                   : <button className="release-btn" onClick={submitRelease}>Release This Unit</button>
               })()}
@@ -706,15 +662,13 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
           disabled={!currentUser || (currentUserAllUnits.length === 0 ? !selectedGroupId : !eligibleTargets.length)}
         >
           {currentUserAllUnits.length === 0
-            ? 'Reserve Pair'
-            : currentUserAllUnits.length < 4
-            ? 'Add Pair'
+            ? 'Reserve Cell'
             : 'Add Unit'}
         </button>
         <button
           onClick={submitRelease}
           disabled={!selectedOwnUnitId || !currentUserAllUnits.some(u => u.id === selectedOwnUnitId)}
-          style={selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) ? {background:'#c0392b', color:'#fff', borderColor:'#a93226'} : {}}
+          className={selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) ? 'danger-btn' : ''}
         >
           Release Unit
         </button>
@@ -727,7 +681,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         <div><span className="box selected"/> Selected</div>
         <div style={{marginLeft:12}}>
           {currentUserAllUnits.length === 0
-            ? 'Tip: click a cell, choose top or bottom pair from the panel, then click "Reserve Pair".'
+            ? 'Tip: click any cell, then click "Reserve Cell" to reserve all 4 units.'
             : 'Tip: click an adjacent empty unit (any registered row) to add it. Click your own unit then "Release Unit" to remove it.'}
         </div>
       </div>
@@ -747,7 +701,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                   {confirm.isRelease
                     ? <>Release unit <strong>{confirm.label}</strong> on <strong>{actionDate}</strong>?</>
                     : confirm.isInitial
-                      ? <>Reserve <strong>{confirm.target.label}</strong> (2 units) on <strong>{actionDate}</strong>?</>
+                      ? <>Reserve <strong>{confirm.target.label}</strong> ({confirm.target.unitIds.length} units) on <strong>{actionDate}</strong>?</>
                       : <>Add <strong>{confirm.target.label}</strong>{addCount > 1 ? ` (${addCount} units)` : ''} on <strong>{actionDate}</strong>?</>
                   }
                 </p>
@@ -755,12 +709,12 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
             })()}
             <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
               <button onClick={() => setConfirm(null)}>Cancel</button>
-              <button onClick={() => {
+              <button className="primary-btn" onClick={() => {
                 if (confirm.isRelease) {
                   const errors = validateDowngrade(currentUserAllUnits, confirm.unitId)
                   if (errors.length) {
                     setConfirm(null)
-                    return alert('No longer valid:\n\n• ' + errors.join('\n• '))
+                    return alert('No longer valid:\n\n- ' + errors.join('\n- '))
                   }
                   onUpdateUnit(confirm.unitId, { owner: null, date: null })
                   setSelectedOwnUnitId(null)
@@ -771,7 +725,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                   const errors = validateUpgrade(currentUserAllUnits, targetUnits)
                   if (errors.length) {
                     setConfirm(null)
-                    return alert('No longer valid:\n\n• ' + errors.join('\n• '))
+                    return alert('No longer valid:\n\n- ' + errors.join('\n- '))
                   }
                   confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate }))
                 }

@@ -132,14 +132,6 @@ export function isConnectedToExistingUnits(existingUserUnits, targetUnits) {
 export function validateUpgrade(currentUserUnits, targetUnits) {
   const errors = []
 
-  // Rule 1 — minimum reservation size (2 units)
-  const newTotal = currentUserUnits.length + targetUnits.length
-  if (newTotal < 2) {
-    errors.push(
-      `Minimum 2 units required. This upgrade would give you only ${newTotal} unit(s).`
-    )
-  }
-
   // Rule 3 — connectivity
   if (currentUserUnits.length > 0 && !isConnectedToExistingUnits(currentUserUnits, targetUnits)) {
     errors.push(
