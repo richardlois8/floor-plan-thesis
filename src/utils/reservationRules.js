@@ -169,6 +169,14 @@ export function validateDowngrade(currentUserUnits, unitToReleaseId) {
   // Full cancellation is always allowed
   if (remaining.length === 0) return errors
 
+  // Rule 2 — cannot release a unit that directly faces the service area
+  const unitToRelease = currentUserUnits.find(u => u.id === unitToReleaseId)
+  if (unitToRelease && isServiceAreaAdjacent(unitToRelease)) {
+    errors.push(
+      'Cannot release: this unit directly faces the service area and must be retained.'
+    )
+  }
+
   // Rule 1 — minimum size (2 units)
   if (remaining.length < 2) {
     errors.push(

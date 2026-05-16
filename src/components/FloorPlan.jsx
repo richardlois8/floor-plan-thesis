@@ -13,6 +13,10 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const [selectedTargetKey, setSelectedTargetKey] = useState(null)
   const [selectedOwnUnitId, setSelectedOwnUnitId] = useState(null)
   const [confirm, setConfirm] = useState(null)
+  const [notification, setNotification] = useState(null)
+
+  const showAlert = (title, body) =>
+    setNotification({ title, lines: Array.isArray(body) ? body : [body] })
 
   // Single action date — written into every reserve / release action.
   const todayISO = new Date().toISOString().split('T')[0]
@@ -47,10 +51,10 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     [flatUnits, currentUser]
   )
 
-  // Rows that already have at least one tenant — keyed as "level-cellR"
+  // Rows that already have at least one tenant (or a recently released unit) — keyed as "level-cellR"
   const registeredRows = useMemo(() => {
     const s = new Set()
-    for (const u of flatUnits) if (u.owner) s.add(`${u.level}-${u.cellR}`)
+    for (const u of flatUnits) if (u.owner || u.availableFrom) s.add(`${u.level}-${u.cellR}`)
     return s
   }, [flatUnits])
 
@@ -103,8 +107,8 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       )
       if (!rowIsRegistered) return []
 
-      // First reservation is the full 4-unit cell (all sub-units must be available)
-      if (g.length === 4 && g.every(u => !u.owner)) {
+      // First reservation is the full 4-unit cell (all sub-units must be available on actionDate)
+      if (g.length === 4 && g.every(u => !u.owner && (!u.availableFrom || actionDate >= u.availableFrom))) {
         return [{
           key: `INIT:${selectedGroupId}:full`,
           kind: 'initial-cell',
@@ -125,6 +129,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     const targets = []
     for (const u of flatUnits) {
       if (u.owner) continue
+      if (u.availableFrom && actionDate < u.availableFrom) continue
       if (!registeredRows.has(`${u.level}-${u.cellR}`)) continue
       if (!isUpgradeTargetEligible(currentUserAllUnits, [u])) continue
       const cx = u.x + u.w / 2
@@ -139,29 +144,29 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     }
 
     return targets.sort((a, b) => a.distance - b.distance)
-  }, [currentUser, currentUserAllUnits, selectedGroupId, flatUnits, groupUnits, registeredRows])
+  }, [currentUser, currentUserAllUnits, selectedGroupId, flatUnits, groupUnits, registeredRows, actionDate])
 
   const submitAction = () => {
-    if (!currentUser) return alert('Please set your user name first')
+    if (!currentUser) return showAlert('Login required', 'Please log in before making a reservation.')
     const dateErrors = validateActionDate(actionDate)
-    if (dateErrors.length) return alert('Invalid date:\n\n- ' + dateErrors.join('\n- '))
+    if (dateErrors.length) return showAlert('Invalid date', dateErrors)
 
     if (currentUserAllUnits.length === 0) {
       // Phase 1: initial full-cell reservation (4 units)
-      if (!selectedGroupId) return alert('Click any cell on the floor plan to select your starting location')
-      if (!eligibleTargets.length) return alert('This cell is not available. Pick another one.')
+      if (!selectedGroupId) return showAlert('No cell selected', 'Click any cell on the floor plan to select your starting location.')
+      if (!eligibleTargets.length) return showAlert('Cell unavailable', 'This cell is not available. Pick another one.')
       const cellTarget = eligibleTargets.find(t => t.key === selectedTargetKey && t.kind === 'initial-cell')
         || eligibleTargets.find(t => t.kind === 'initial-cell')
-      if (!cellTarget) return alert('This cell is not available. Pick another one.')
+      if (!cellTarget) return showAlert('Cell unavailable', 'This cell is not available. Pick another one.')
       setSelectedTargetKey(cellTarget.key)
       setConfirm({ isInitial: true, target: cellTarget })
     } else {
       // Phase 2: add 1 unit at a time
-      if (!eligibleTargets.length) return alert('No adjacent empty units available to add.')
+      if (!eligibleTargets.length) return showAlert('No units available', 'No adjacent empty units are available to add.')
       const target = eligibleTargets.find(t => t.key === selectedTargetKey) || eligibleTargets[0]
       const targetUnits = target.unitIds.map(id => unitsById.get(id)).filter(Boolean)
       const errors = validateUpgrade(currentUserAllUnits, targetUnits)
-      if (errors.length) return alert('Cannot add unit:\n\n- ' + errors.join('\n- '))
+      if (errors.length) return showAlert('Cannot add unit', errors)
       setSelectedTargetKey(target.key)
       setConfirm({ isInitial: false, target })
     }
@@ -170,29 +175,32 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   const submitRelease = () => {
     if (!selectedOwnUnitId) return
     const errors = validateDowngrade(currentUserAllUnits, selectedOwnUnitId)
-    if (errors.length) return alert('Release not allowed:\n\n- ' + errors.join('\n- '))
+    if (errors.length) return showAlert('Release not allowed', errors)
     setConfirm({ isRelease: true, unitId: selectedOwnUnitId, label: selectedOwnUnitId })
   }
 
   const toggleClaim = u => {
-    if (!currentUser) return alert('Set your user name to claim a unit')
+    if (!currentUser) return showAlert('Login required', 'Please log in before claiming a unit.')
     if (!u.owner) {
-      // Debug claim: enforce registered-row check and connectivity rules.
+      // Debug claim: enforce registered-row check, date availability, and connectivity rules.
       if (!registeredRows.has(`${u.level}-${u.cellR}`)) {
-        return alert('Cannot claim: this row has no existing reservations.')
+        return showAlert('Cannot claim', 'This row has no existing reservations.')
+      }
+      if (u.availableFrom && actionDate < u.availableFrom) {
+        return showAlert('Cannot claim', `This unit is not available until ${u.availableFrom}.`)
       }
       if (currentUserAllUnits.length > 0) {
         const errors = validateUpgrade(currentUserAllUnits, [u])
-        if (errors.length) return alert('Cannot claim:\n\n- ' + errors.join('\n- '))
+        if (errors.length) return showAlert('Cannot claim', errors)
       }
-      onUpdateUnit(u.id, { owner: currentUser, date: actionDate })
+      onUpdateUnit(u.id, { owner: currentUser, date: actionDate, availableFrom: null })
     } else if (u.owner === currentUser) {
       // Releasing (downgrade): validate all rules before allowing the release
       const errors = validateDowngrade(currentUserAllUnits, u.id)
-      if (errors.length) return alert('Release not allowed:\n\n- ' + errors.join('\n- '))
-      onUpdateUnit(u.id, { owner: null })
+      if (errors.length) return showAlert('Release not allowed', errors)
+      onUpdateUnit(u.id, { owner: null, date: null, availableFrom: actionDate })
     } else {
-      alert('This unit is owned by ' + u.owner)
+      showAlert('Unit occupied', `This unit is reserved by ${u.owner}.`)
     }
   }
 
@@ -342,20 +350,33 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       levelUnits.forEach(u => {
         const occupied = !!u.owner
         const ownedByMe = u.owner === currentUser
+        const pendingAvailable = !occupied && !!u.availableFrom && actionDate < u.availableFrom
+        const fillColor = occupied
+          ? (ownedByMe ? '#2563eb' : '#334155')
+          : pendingAvailable
+            ? 'rgba(253, 186, 116, 0.72)'
+            : 'rgba(255, 255, 255, 0.72)'
+        const strokeColor = occupied
+          ? 'rgba(15, 23, 42, 0.32)'
+          : pendingAvailable
+            ? 'rgba(234, 88, 12, 0.45)'
+            : 'rgba(148, 163, 184, 0.45)'
         const rect = draw
           .rect(u.w, u.h)
           .move(u.x, u.y)
           .radius(0)
-          .fill(occupied ? (ownedByMe ? '#2563eb' : '#334155') : 'rgba(255, 255, 255, 0.72)')
-          .stroke({ color: occupied ? 'rgba(15, 23, 42, 0.32)' : 'rgba(148, 163, 184, 0.45)', width: 1 })
+          .fill(fillColor)
+          .stroke({ color: strokeColor, width: 1 })
 
-        // Tooltip: show who reserved it and when
+        // Tooltip: show who reserved it and when, or when it becomes available
         if (occupied) {
           rect.element('title').words(`${u.owner} - reserved ${u.date ?? '-'}`)
+        } else if (pendingAvailable) {
+          rect.element('title').words(`Available from ${u.availableFrom}`)
         }
 
         rect.attr({ 'data-id': u.id })
-        rect.css({ cursor: (occupied && !ownedByMe) ? 'not-allowed' : 'pointer' })
+        rect.css({ cursor: (occupied && !ownedByMe) || pendingAvailable ? 'not-allowed' : 'pointer' })
 
         // const label = draw
         //   .text(u.id)
@@ -678,6 +699,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       <div className="legend">
         <div><span className="box filled"/> Occupied</div>
         <div><span className="box"/> Available</div>
+        <div><span className="box pending"/> Releasing soon</div>
         <div><span className="box selected"/> Selected</div>
         <div style={{marginLeft:12}}>
           {currentUserAllUnits.length === 0
@@ -714,25 +736,42 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                   const errors = validateDowngrade(currentUserAllUnits, confirm.unitId)
                   if (errors.length) {
                     setConfirm(null)
-                    return alert('No longer valid:\n\n- ' + errors.join('\n- '))
+                    return showAlert('No longer valid', errors)
                   }
-                  onUpdateUnit(confirm.unitId, { owner: null, date: null })
+                  onUpdateUnit(confirm.unitId, { owner: null, date: null, availableFrom: actionDate })
                   setSelectedOwnUnitId(null)
                 } else if (confirm.isInitial) {
-                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate }))
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate, availableFrom: null }))
                 } else {
                   const targetUnits = confirm.target.unitIds.map(id => unitsById.get(id)).filter(Boolean)
                   const errors = validateUpgrade(currentUserAllUnits, targetUnits)
                   if (errors.length) {
                     setConfirm(null)
-                    return alert('No longer valid:\n\n- ' + errors.join('\n- '))
+                    return showAlert('No longer valid', errors)
                   }
-                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate }))
+                  confirm.target.unitIds.forEach(id => onUpdateUnit(id, { owner: currentUser, date: actionDate, availableFrom: null }))
                 }
                 setConfirm(null)
                 setSelectedGroupId(null)
                 setSelectedTargetKey(null)
               }}>Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {notification && (
+        <div className="modal-overlay" onClick={() => setNotification(null)}>
+          <div className="modal notification-modal" onClick={e => e.stopPropagation()}>
+            <h3 className="notification-title">{notification.title}</h3>
+            <div className="notification-body">
+              {notification.lines.length === 1
+                ? <p>{notification.lines[0]}</p>
+                : <ul>{notification.lines.map((l, i) => <li key={i}>{l}</li>)}</ul>
+              }
+            </div>
+            <div style={{display:'flex',justifyContent:'flex-end'}}>
+              <button className="primary-btn" onClick={() => setNotification(null)}>OK</button>
             </div>
           </div>
         </div>

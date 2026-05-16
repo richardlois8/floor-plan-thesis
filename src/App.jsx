@@ -196,6 +196,7 @@ const defaultUnits = () => {
               q: quadrant,
               owner: null,
               date: null,
+              availableFrom: null,
               x,
               y,
               w: subW,
@@ -227,7 +228,11 @@ const defaultUnits = () => {
 // Ensure every unit has a date field — migrate from old startDate/endDate or bare owner format.
 const migrateUnit = u => {
   const { startDate, endDate, ...rest } = u
-  return { ...rest, date: u.date ?? startDate ?? (u.owner ? '2000-01-01' : null) }
+  return {
+    ...rest,
+    date: u.date ?? startDate ?? (u.owner ? '2000-01-01' : null),
+    availableFrom: u.availableFrom ?? null,
+  }
 }
 
 const normalizeState = (data) => {
