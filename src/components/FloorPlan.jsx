@@ -8,7 +8,7 @@ import {
   validateActionDate,
 } from '../utils/reservationRules'
 
-export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser, resetApp }) {
+export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser, resetApp, onGroupSelect, highlightUnitIds = [] }) {
   const [selectedGroupId, setSelectedGroupId] = useState(null)
   const [selectedTargetKeys, setSelectedTargetKeys] = useState(new Set())
   const [selectedOwnUnitId, setSelectedOwnUnitId] = useState(null)
@@ -89,6 +89,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     setSelectedGroupId(u.groupId || null)
     setSelectedTargetKeys(new Set())
     setSelectedOwnUnitId(null)
+    onGroupSelect?.(u.groupId || null)
   }
 
   const groupUnits = useMemo(() => {
@@ -551,16 +552,18 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [levels, flatUnits, levelViewBoxes, eligibleTargets, selectedTargetKeys, selectedGroupId, groupUnits, unitsById, hallways, levelUnitsMap])
 
-  // Animate selection changes (cell selection + target selection + release selection)
+  // Animate selection changes (cell selection + target selection + release selection + AI highlight)
   useEffect(() => {
     const map = unitElsRef.current
     const selectedUnits = new Set((groupUnits.get(selectedGroupId) || []).map(u => u.id))
+    const highlightSet = new Set(highlightUnitIds)
 
     for (const [id, obj] of map.entries()) {
       const u = unitsById.get(id)
       const occupied = !!u?.owner
       const isInSelCell = selectedUnits.has(id)
       const isSelectedForRelease = id === selectedOwnUnitId
+      const isHighlighted = highlightSet.has(id)
 
       let strokeColor = occupied ? 'rgba(15, 23, 42, 0.32)' : 'rgba(148, 163, 184, 0.45)'
       let strokeWidth = 1
@@ -570,6 +573,9 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       } else if (isInSelCell) {
         strokeColor = '#f97316'
         strokeWidth = 4
+      } else if (isHighlighted) {
+        strokeColor = '#10b981'
+        strokeWidth = 3
       }
       obj.rect.stroke({ width: strokeWidth, color: strokeColor })
     }
@@ -589,7 +595,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         width: isSelected ? 3 : 1
       })
     }
-  }, [selectedGroupId, selectedTargetKeys, selectedOwnUnitId, groupUnits, unitsById])
+  }, [selectedGroupId, selectedTargetKeys, selectedOwnUnitId, groupUnits, unitsById, highlightUnitIds])
 
   return (
     <div className="floorplan-wrap">

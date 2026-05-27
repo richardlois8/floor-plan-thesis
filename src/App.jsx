@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import FloorPlan from './components/FloorPlan'
+import RequestSidebar from './components/RequestSidebar'
+import { evaluateRequest } from './api/ai'
 
 // Minimal in-memory data model with localStorage persistence
 const STORAGE_KEY = 'fp_demo_state_v1'
@@ -241,7 +243,8 @@ const normalizeState = (data) => {
   if (data?.levels) {
     return {
       ...data,
-      levels: data.levels.map(lvl => ({ ...lvl, units: lvl.units.map(migrateUnit) }))
+      levels: data.levels.map(lvl => ({ ...lvl, units: lvl.units.map(migrateUnit) })),
+      requests: Array.isArray(data.requests) ? data.requests : [],
     }
   }
   if (Array.isArray(data?.units)) {
@@ -249,17 +252,25 @@ const normalizeState = (data) => {
       level,
       units: data.units.filter(u => u.level === level).map(migrateUnit)
     }))
-    return { levels }
+    return { levels, requests: [] }
   }
-  return { levels: defaultUnits() }
+  return { levels: defaultUnits(), requests: [] }
 }
+
+const applyUnitPatch = (state, unitId, patch) => ({
+  ...state,
+  levels: state.levels.map(level => ({
+    ...level,
+    units: level.units.map(u => (u.id === unitId ? { ...u, ...patch } : u)),
+  })),
+})
 
 export default function App() {
   const [state, setState] = useState(() => {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return normalizeState(JSON.parse(raw))
     const u = defaultUnits()
-    return { levels: u }
+    return { levels: u, requests: [] }
   })
 
   const [currentUser, setCurrentUser] = useState(() => {
@@ -287,10 +298,56 @@ export default function App() {
 
   const resetState = () => {
     localStorage.removeItem(STORAGE_KEY)
-    setState({ levels: defaultUnits() })
+    setState({ levels: defaultUnits(), requests: [] })
+  }
+
+  const handleSubmitRequest = async (form) => {
+    const allUnits = state.levels.flatMap(l => l.units)
+    const result = await evaluateRequest({
+      request: form,
+      allUnits,
+      existingRequests: state.requests,
+    })
+
+    const newRequest = {
+      id: `req-${Date.now()}`,
+      ...form,
+      status: result.decision === 'allocate' ? 'allocated' : 'rejected',
+      reasoning: result.reasoning,
+      assignUnitIds: result.assignUnitIds,
+      releaseUnitIds: result.releaseUnitIds,
+      createdAt: new Date().toISOString(),
+    }
+
+    setState(prev => {
+      let next = { ...prev, requests: [...prev.requests, newRequest] }
+
+      if (result.decision === 'allocate') {
+        for (const id of result.assignUnitIds) {
+          next = applyUnitPatch(next, id, {
+            owner: form.name,
+            date: form.reservationDate,
+            availableFrom: null,
+            releasedBy: null,
+          })
+        }
+        for (const id of result.releaseUnitIds) {
+          next = applyUnitPatch(next, id, {
+            owner: null,
+            availableFrom: form.reservationDate,
+            releasedBy: form.name,
+          })
+        }
+      }
+
+      return next
+    })
   }
 
   const hallways = buildHallways()
+
+  const [pickedGroupId, setPickedGroupId] = useState(null)
+  const [highlightUnitIds, setHighlightUnitIds] = useState([])
 
   // Derive all current owners with unit counts from live state
   const existingUsers = useMemo(() => {
@@ -322,7 +379,15 @@ export default function App() {
           <UserSelector existingUsers={existingUsers} onSetUser={setCurrentUser} />
         )}
       </div>
-      <FloorPlan levels={state.levels} hallways={hallways} onUpdateUnit={updateUnit} currentUser={currentUser} resetApp={resetState} />
+      <FloorPlan levels={state.levels} hallways={hallways} onUpdateUnit={updateUnit} currentUser={currentUser} resetApp={resetState} onGroupSelect={setPickedGroupId} highlightUnitIds={highlightUnitIds} />
+      <RequestSidebar
+        requests={state.requests}
+        allUnits={state.levels.flatMap(l => l.units)}
+        currentUser={currentUser}
+        onSubmit={handleSubmitRequest}
+        pickedGroupId={pickedGroupId}
+        onHighlightUnits={setHighlightUnitIds}
+      />
     </div>
   )
 }
