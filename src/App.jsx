@@ -309,7 +309,10 @@ export default function App() {
     <div className="app">
       <div className="app-header">
         <div className="app-title-row">
-          <h1 className="app-title">Floor Plan Booking</h1>
+          <div className="app-title-block">
+            <h1 className="app-title">Floor Plan Booking</h1>
+            <p className="app-subtitle">Unit reservation &amp; management system</p>
+          </div>
           {currentUser && (
             <UserBadge
               name={currentUser}

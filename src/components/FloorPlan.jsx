@@ -594,15 +594,15 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
   return (
     <div className="floorplan-wrap">
       <section className="plan-overview" aria-label="Floor plan summary">
-        <div className="overview-card">
+        <div className="overview-card overview-card--total">
           <span className="overview-label">Total units</span>
           <strong>{planStats.total}</strong>
         </div>
-        <div className="overview-card">
+        <div className="overview-card overview-card--available">
           <span className="overview-label">Available</span>
           <strong>{planStats.available}</strong>
         </div>
-        <div className="overview-card">
+        <div className="overview-card overview-card--occupied">
           <span className="overview-label">Occupied</span>
           <strong>{planStats.occupied}</strong>
         </div>
@@ -616,6 +616,12 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         <div className="floorplan-levels">
           {levels.map(level => (
             <div key={level.level} className="floorplan-level">
+              <div className="floorplan-level-header">
+                <span className={`floorplan-level-dot floorplan-level-dot--${level.level}`} />
+                <span className="floorplan-level-label">
+                  {level.level === 0 ? 'Level 1 — Ground Floor' : 'Level 2 — Upper Floor'}
+                </span>
+              </div>
               <div
                 ref={el => {
                   if (el) levelHostRefs.current.set(level.level, el)
@@ -627,83 +633,110 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
         </div>
 
         <aside className="sidepanel">
-          <div className="panel-kicker">Reservation controls</div>
+          <div className="panel-kicker">
+            <svg className="panel-kicker-icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+            </svg>
+            Reservation controls
+          </div>
+
           {/* ── Action date ───────────────────────────────────────── */}
-          <div className="sidepanel-title">Action date</div>
-          <div className="date-picker-row">
-            <label className="date-field">
-              <span>Date</span>
-              <input type="date" value={actionDate} min={todayISO}
-                onChange={e => setActionDate(e.target.value)} />
-            </label>
+          <div className="sidepanel-section">
+            <div className="sidepanel-title">
+              <svg className="sidepanel-title-icon" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="2" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4"/>
+                <path d="M1 5h12" stroke="currentColor" strokeWidth="1.4"/>
+                <path d="M4 1v2M10 1v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
+              Action date
+            </div>
+            <div className="date-picker-row">
+              <label className="date-field">
+                <span>Date</span>
+                <input type="date" value={actionDate} min={todayISO}
+                  onChange={e => setActionDate(e.target.value)} />
+              </label>
+            </div>
           </div>
 
           {/* ── Action section ────────────────────────────────────── */}
-          <div className="sidepanel-title" style={{marginTop: 14}}>
-            {currentUserAllUnits.length === 0
-              ? 'New reservation'
-              : 'Add a unit'}
-          </div>
-
-          {!currentUser && (
-            <div className="sidepanel-hint">Set your user name to make a reservation.</div>
-          )}
-          {currentUser && currentUserAllUnits.length === 0 && !selectedGroupId && (
-            <div className="sidepanel-hint">Click any cell to select your starting location.</div>
-          )}
-          {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length === 0 && (() => {
-            const g = groupUnits.get(selectedGroupId) || []
-            const cellLevel = g[0]?.level
-            const cellRow   = g[0]?.cellR
-            const rowRegistered = flatUnits.some(u => u.owner && u.level === cellLevel && u.cellR === cellRow)
-            return rowRegistered
-              ? <div className="sidepanel-hint">This cell is already partially or fully occupied. Pick another cell in the same row.</div>
-              : <div className="sidepanel-hint">This row has no existing reservations yet. New registrations are not permitted here. Choose a cell in a registered row.</div>
-          })()}
-          {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length > 0 && (
-            <div className="sidepanel-hint">Click <strong>Reserve Cell</strong> to reserve all 4 units in this cell.</div>
-          )}
-          {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length === 0 && (
-            <div className="sidepanel-hint">No adjacent empty units available.</div>
-          )}
-          {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length > 0 && (
-            <div className="sidepanel-hint">
-              Select at least <strong>2 adjacent empty units</strong>, then click <strong>Add Unit</strong>.
-              {selectedTargetKeys.size > 0 && ` (${selectedTargetKeys.size} selected)`}
+          <div className="sidepanel-section">
+            <div className="sidepanel-title">
+              <svg className="sidepanel-title-icon" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.4"/>
+                <path d="M7 4.5v5M4.5 7h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
+              {currentUserAllUnits.length === 0 ? 'New reservation' : 'Add a unit'}
             </div>
-          )}
 
-          {eligibleTargets.length > 0 && (
-            <div className="target-list">
-              {eligibleTargets.map(t => (
-                <button
-                  key={t.key}
-                  className={`target-item ${selectedTargetKeys.has(t.key) ? 'active' : ''}`}
-                  onClick={() => toggleTargetKey(t.key)}
-                >
-                  <div className="target-main">
-                    <div className="target-label">{t.label}</div>
-                    <div className="target-meta">
-                      {t.unitIds.length > 1 && (
-                        <span className="pill">
-                          {t.pairRow ? `2 units / ${t.pairRow}` : '2 units'}
+            {!currentUser && (
+              <div className="sidepanel-hint sidepanel-hint--info">Set your user name to make a reservation.</div>
+            )}
+            {currentUser && currentUserAllUnits.length === 0 && !selectedGroupId && (
+              <div className="sidepanel-hint">Click any cell on the floor plan to select your starting location.</div>
+            )}
+            {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length === 0 && (() => {
+              const g = groupUnits.get(selectedGroupId) || []
+              const cellLevel = g[0]?.level
+              const cellRow   = g[0]?.cellR
+              const rowRegistered = flatUnits.some(u => u.owner && u.level === cellLevel && u.cellR === cellRow)
+              return rowRegistered
+                ? <div className="sidepanel-hint sidepanel-hint--warn">This cell is already partially or fully occupied. Pick another cell in the same row.</div>
+                : <div className="sidepanel-hint sidepanel-hint--warn">This row has no existing reservations yet. New registrations are not permitted here. Choose a cell in a registered row.</div>
+            })()}
+            {currentUser && currentUserAllUnits.length === 0 && selectedGroupId && eligibleTargets.length > 0 && (
+              <div className="sidepanel-hint sidepanel-hint--info">Click <strong>Reserve Cell</strong> to reserve all 4 units in this cell.</div>
+            )}
+            {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length === 0 && (
+              <div className="sidepanel-hint">No adjacent empty units available.</div>
+            )}
+            {currentUser && currentUserAllUnits.length > 0 && eligibleTargets.length > 0 && (
+              <div className="sidepanel-hint">
+                Select at least <strong>2 adjacent empty units</strong>, then click <strong>Add Unit</strong>.
+                {selectedTargetKeys.size > 0 && ` (${selectedTargetKeys.size} selected)`}
+              </div>
+            )}
+
+            {eligibleTargets.length > 0 && (
+              <div className="target-list">
+                {eligibleTargets.map(t => (
+                  <button
+                    key={t.key}
+                    className={`target-item ${selectedTargetKeys.has(t.key) ? 'active' : ''}`}
+                    onClick={() => toggleTargetKey(t.key)}
+                  >
+                    <div className="target-main">
+                      <div className="target-label">{t.label}</div>
+                      <div className="target-meta">
+                        {t.unitIds.length > 1 && (
+                          <span className="pill">
+                            {t.pairRow ? `2 units / ${t.pairRow}` : '2 units'}
+                          </span>
+                        )}
+                        <span className="pill pill--kind">
+                          {t.kind === 'cross-floor' ? 'cross-floor' : 'same level'}
                         </span>
-                      )}
-                      <span className="pill">
-                        {t.kind === 'cross-floor' ? 'cross-floor' : 'same level'}
-                      </span>
-                      <span className="pill">dist {t.distance}</span>
+                        <span className="pill">dist {t.distance}</span>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Release section — shown when user has clicked one of their own units */}
           {currentUser && selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) && (
             <div className="release-section">
-              <div className="sidepanel-title" style={{color:'#c0392b', marginTop: 12}}>Release unit</div>
+              <div className="sidepanel-title" style={{color:'#c0392b'}}>
+                <svg className="sidepanel-title-icon" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M2 7h10M8 3l4 4-4 4" stroke="#c0392b" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                Release unit
+              </div>
               <div className="sidepanel-hint">
                 Selected: <strong>{selectedOwnUnitId}</strong>
               </div>
@@ -721,38 +754,43 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
       </div>
 
       <div className="controls">
-        <button
-          onClick={submitAction}
-          disabled={!currentUser || (currentUserAllUnits.length === 0 ? !selectedGroupId : !eligibleTargets.length)}
-        >
-          {currentUserAllUnits.length === 0
-            ? 'Reserve Cell'
-            : 'Add Unit'}
-        </button>
-        <button
-          onClick={submitRelease}
-          disabled={!selectedOwnUnitId || !currentUserAllUnits.some(u => u.id === selectedOwnUnitId)}
-          className={selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) ? 'danger-btn' : ''}
-        >
-          Release Unit
-        </button>
-        <button onClick={() => { resetApp() }}>Reset</button>
+        <div className="controls-group">
+          <button
+            className="primary-btn"
+            onClick={submitAction}
+            disabled={!currentUser || (currentUserAllUnits.length === 0 ? !selectedGroupId : !eligibleTargets.length)}
+          >
+            {currentUserAllUnits.length === 0 ? 'Reserve Cell' : 'Add Unit'}
+          </button>
+          <button
+            onClick={submitRelease}
+            disabled={!selectedOwnUnitId || !currentUserAllUnits.some(u => u.id === selectedOwnUnitId)}
+            className={selectedOwnUnitId && currentUserAllUnits.some(u => u.id === selectedOwnUnitId) ? 'danger-btn' : ''}
+          >
+            Release Unit
+          </button>
+        </div>
+        <div className="controls-sep" />
+        <button className="reset-btn" onClick={() => { resetApp() }}>Reset data</button>
       </div>
 
       <div className="legend">
-        <div><span className="box filled"/> Occupied</div>
-        <div><span className="box"/> Available</div>
-        <div><span className="box pending"/> Releasing soon</div>
-        <div><span className="box selected"/> Selected</div>
-        <div style={{marginLeft:12}}>
+        <span className="legend-item"><span className="legend-dot legend-dot--occupied" /> Occupied</span>
+        <span className="legend-item"><span className="legend-dot legend-dot--available" /> Available</span>
+        <span className="legend-item"><span className="legend-dot legend-dot--pending" /> Releasing soon</span>
+        <span className="legend-item"><span className="legend-dot legend-dot--selected" /> Selected</span>
+        <span className="legend-tip">
           {currentUserAllUnits.length === 0
-            ? 'Tip: click any cell, then click "Reserve Cell" to reserve all 4 units.'
-            : 'Tip: select at least 2 adjacent empty units (any registered row), then click "Add Unit". Click your own unit then "Release Unit" to remove it.'}
-        </div>
+            ? 'Click any cell, then "Reserve Cell" to reserve all 4 units.'
+            : 'Select ≥ 2 adjacent empty units, then click "Add Unit". Click your own unit → "Release Unit" to remove it.'}
+        </span>
       </div>
 
       <section className="scheduled-requests">
-        <h2 className="sr-heading">Scheduled Requests</h2>
+        <h2 className="sr-heading">
+          <span className="sr-heading-dot" />
+          Scheduled Requests
+        </h2>
         {pendingActions.length === 0 ? (
           <p className="sr-empty">No upcoming scheduled actions.</p>
         ) : (
@@ -811,7 +849,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                 </p>
               </>)
             })()}
-            <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+            <div className="modal-actions">
               <button onClick={() => setConfirm(null)}>Cancel</button>
               <button className="primary-btn" onClick={() => {
                 if (confirm.isRelease) {
@@ -852,7 +890,7 @@ export default function FloorPlan({ levels, hallways, onUpdateUnit, currentUser,
                 : <ul>{notification.lines.map((l, i) => <li key={i}>{l}</li>)}</ul>
               }
             </div>
-            <div style={{display:'flex',justifyContent:'flex-end'}}>
+            <div className="modal-actions">
               <button className="primary-btn" onClick={() => setNotification(null)}>OK</button>
             </div>
           </div>
